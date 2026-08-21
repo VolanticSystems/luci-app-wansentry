@@ -1,6 +1,6 @@
 name: Build
 
-# Builds the luci-app-appflow .ipk/.apk via the official OpenWrt SDK action
+# Builds the luci-app-wansentry .ipk/.apk via the official OpenWrt SDK action
 # (openwrt/gh-action-sdk). Evidence for the pattern below:
 #   - Action + env vars:  https://github.com/openwrt/gh-action-sdk (README + entrypoint.sh)
 #   - Real single-package luci-app repo using it the same way:
@@ -45,7 +45,7 @@ jobs:
           # against git when those dirs exist; harmless (and cheap) when they don't.
           fetch-depth: 0
 
-      - name: Build luci-app-appflow via OpenWrt SDK
+      - name: Build luci-app-wansentry via OpenWrt SDK
         uses: openwrt/gh-action-sdk@v11
         env:
           # ARCH selects the openwrt/sdk container tag directly (Dockerfile:

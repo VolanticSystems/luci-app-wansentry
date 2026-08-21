@@ -31,12 +31,6 @@ var callMwan3Status = rpc.declare({
 	reject: true
 });
 
-var callInitList = rpc.declare({
-	object: 'luci',
-	method: 'getInitList',
-	params: [ 'name' ]
-});
-
 var callInitAction = rpc.declare({
 	object: 'luci',
 	method: 'setInitAction',
@@ -155,12 +149,14 @@ function dot(state) {
  * parser keeps only online/offline transitions and reports the newest first.
  *
  * logread has no structured output and no ubus object, so this is the one
- * place the app shells out. The ACL grants exec on exactly
- * `/sbin/logread -e mwan3` and nothing else. */
+ * place the app shells out. `-l 200` bounds the cost: without it logread
+ * returns the entire matching ring buffer every 5 s poll, which on a router
+ * where mwan3 has been flapping is the whole log each tick. The ACL grants exec
+ * on exactly this command string and nothing else. */
 var EVENT_RE = /^(.+?)\s+\S+\s+(mwan3\S*)\[\d+\]:\s+Interface\s+(\S+)\s+\(([^)]*)\)\s+is\s+(online|offline)/;
 
 function events(limit) {
-	return fs.exec('/sbin/logread', [ '-e', 'mwan3' ]).then(function(res) {
+	return fs.exec('/sbin/logread', [ '-l', '200', '-e', 'mwan3' ]).then(function(res) {
 		if (!res || res.code !== 0 || !res.stdout)
 			return [];
 
@@ -184,7 +180,6 @@ function events(limit) {
 return baseclass.extend({
 	rpc: {
 		status: callMwan3Status,
-		initList: callInitList,
 		initAction: callInitAction
 	},
 

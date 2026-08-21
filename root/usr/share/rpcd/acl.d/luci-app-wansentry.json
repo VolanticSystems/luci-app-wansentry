@@ -3,11 +3,10 @@
 		"description": "Grant access to dual-WAN failover configuration",
 		"read": {
 			"file": {
-				"/sbin/logread -e mwan3": [ "exec" ]
+				"/sbin/logread -l 200 -e mwan3": [ "exec" ]
 			},
 			"ubus": {
 				"file": [ "exec" ],
-				"luci": [ "getInitList" ],
 				"luci-rpc": [ "getNetworkDevices" ],
 				"mwan3": [ "status" ],
 				"network.interface": [ "dump" ],

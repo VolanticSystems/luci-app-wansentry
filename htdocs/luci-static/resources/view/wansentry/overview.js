@@ -341,7 +341,9 @@ return view.extend({
 
 		o = s.option(form.DynamicList, 'track_ip', _('Health-check hosts'),
 			_('Pinged through each uplink\'s own routing table. Use two hosts on different operators: the generated config marks an uplink up when any one of them answers, so a single ICMP-hostile target cannot cause a phantom outage.'));
-		o.datatype = 'ip4addr';
+		/* nomask: a bare host address only. Without it 'ip4addr' accepts
+		 * 8.8.8.8/24, which mwan3track would then try to ping as a non-address. */
+		o.datatype = 'ip4addr("nomask")';
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'interval', _('Check interval'),
@@ -406,6 +408,22 @@ return view.extend({
 	handleSave: function(ev) {
 		var self = this;
 
+		/* Refuse foreign mwan3 config BEFORE staging anything. map.save() pushes
+		 * /etc/config/wansentry into the pending set server-side; if the
+		 * generator then threw the foreign-config refusal, those wansentry
+		 * changes would linger and could ride out on a later Apply elsewhere in
+		 * LuCI. The foreign check does not depend on the form's pending values,
+		 * so it can run first and keep the two configs all-or-nothing. */
+		var state = gen.audit();
+
+		if (state.foreign.length) {
+			ui.addNotification(null, E('p', {}, [
+				_('Refusing to save: /etc/config/mwan3 contains configuration wansentry did not create.')
+			]), 'danger');
+
+			return Promise.resolve(false);
+		}
+
 		return this.map.save(null, true).then(function() {
 			gen.write(gen.settings());
 
@@ -427,10 +445,6 @@ return view.extend({
 			if (!ok)
 				return;
 
-			ui.showModal(_('Applying configuration'), [
-				E('p', { 'class': 'spinning' }, [ _('Committing wansentry and mwan3, then reloading the failover service.') ])
-			]);
-
 			/* The init actions run BEFORE the commit, deliberately.
 			 *
 			 * Turning failover off: stopping mwan3 first deregisters its procd
@@ -441,23 +455,18 @@ return view.extend({
 			 * registered by the time the commit fires it, and the second or so
 			 * mwan3 spends on the previous configuration is harmless — it is
 			 * either the same configuration with tracking off, or the mwan3
-			 * package defaults it was already running anyway.
-			 *
-			 * Doing this after uci.apply() instead leaves the service state
-			 * riding on a promise that resolves after the page has already
-			 * been told the apply succeeded. */
+			 * package defaults it was already running anyway. */
 			return sync().then(function() {
-				/* uci.apply() defaults to a 10 s rollback window, which is the
-				 * deadline for the browser's confirm call to arrive before
-				 * rpcd reverts /etc/config. Use the same window LuCI's own
-				 * Apply button uses, so a slow round trip does not silently
-				 * undo the write. */
-				return uci.apply(L.env.apply_rollback || 90);
-			}).then(function() {
-				ui.hideModal();
-				window.location.reload();
+				/* Hand the commit to LuCI's own apply flow. It owns the
+				 * rollback-protected commit, the confirm countdown, and the
+				 * reload, and it drives all three from THIS document — so the
+				 * confirm can never be lost to a reload that fires before the
+				 * confirm call is sent (the bug a manual uci.apply().then(
+				 * reload) walks straight into: uci.apply resolves before the
+				 * +1000 ms confirm is scheduled, and the reload cancels it,
+				 * leaving rpcd to roll the config back ~90 s later). */
+				return ui.changes.apply(true);
 			}).catch(function(e) {
-				ui.hideModal();
 				ui.addNotification(null, E('p', {}, [ _('Apply failed: %s').format(e.message || e) ]), 'danger');
 			});
 		});

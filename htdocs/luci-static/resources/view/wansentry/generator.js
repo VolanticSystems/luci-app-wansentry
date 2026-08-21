@@ -111,11 +111,11 @@ function sectionEq(sec, ref) {
 	return have.every(function(k) { return valueEq(sec[k], ref[k]); });
 }
 
+/* Clamp an integer to [min,max]. A value that is not a clean integer string
+ * (a hand-edited /etc/config/wansentry could hold anything) falls back rather
+ * than being silently coerced the way parseInt('5s') -> 5 would. */
 function clamp(val, min, max, fallback) {
-	var n = parseInt(val, 10);
-
-	if (isNaN(n))
-		n = fallback;
+	var n = /^-?\d+$/.test(String(val ?? '').trim()) ? parseInt(val, 10) : fallback;
 
 	return String(Math.min(max, Math.max(min, n)));
 }
@@ -132,7 +132,10 @@ function settings() {
 		return (v == null || v === '') ? def : v;
 	};
 
-	var interval = clamp(g('interval', '5'), 1, 3600, 5);
+	/* Floor of 2: the form's datatype is range(2,3600) and validate() requires
+	 * interval > timeout (min timeout 1), so 1 could never be produced by the
+	 * UI and must not slip in from a hand-edited config either. */
+	var interval = clamp(g('interval', '5'), 2, 3600, 5);
 
 	return {
 		enabled:  g('enabled', '0') === '1',
@@ -266,12 +269,25 @@ function audit() {
 
 /* ----------------------------------------------------------------- apply */
 
+/* mwan3 (and rpcd's uci name check) accept only [A-Za-z0-9_] in a section name;
+ * wansentry additionally reserves its own wansentry_* namespace so a chosen
+ * interface can never collide with a generated member/policy/rule name. */
+var RESERVED = { 'wansentry_primary': 1, 'wansentry_backup': 1,
+                 'wansentry_fail': 1, 'wansentry_def': 1 };
+
+function validName(name) {
+	return /^[A-Za-z0-9_]+$/.test(name) && !/^wansentry_/.test(name) && !RESERVED[name];
+}
+
 function validate(s) {
 	if (!s.primary || !s.backup)
 		return _('Select a primary and a backup interface first.');
 
 	if (s.primary === s.backup)
 		return _('The primary and the backup interface must be different.');
+
+	if (!validName(s.primary) || !validName(s.backup))
+		return _('Interface names may use only letters, digits and underscore, and may not begin with "wansentry_".');
 
 	if (!s.track_ip.length)
 		return _('At least one health-check host is required.');
@@ -311,7 +327,10 @@ function write(s) {
 		}
 	});
 
-	if (!uci.get('mwan3', 'globals')) {
+	/* Look globals up by TYPE, not by the name 'globals': mwan3 also accepts an
+	 * anonymous `config globals`, which a name lookup would miss, causing a
+	 * second globals section to be added that wansentry would never reconcile. */
+	if (!uci.sections('mwan3', 'globals').length) {
 		uci.add('mwan3', 'globals', 'globals');
 		uci.set('mwan3', 'globals', 'mmx_mask', '0x3F00');
 		ops += 2;
@@ -333,7 +352,11 @@ function write(s) {
 			ops++;
 		}
 
-		optKeys(d.options).forEach(function(k) {
+		/* Insertion order, not sorted: the same order preview() renders, so the
+		 * two never disagree about how the section is laid out. */
+		Object.keys(d.options).forEach(function(k) {
+			if (k.charAt(0) === '.')
+				return;
 			if (!valueEq(uci.get('mwan3', d.name, k), d.options[k])) {
 				uci.set('mwan3', d.name, k, d.options[k]);
 				ops++;
@@ -353,17 +376,42 @@ function write(s) {
 
 /* --------------------------------------------------------------- preview */
 
-/* Renders the model exactly as it will land in /etc/config/mwan3. The screen
- * shows this verbatim: a generator the user cannot audit is a black box, and
- * the audience for this package is people who read config files. */
+/* Renders what apply will do to /etc/config/mwan3: the sections wansentry will
+ * remove (stock scaffolding it adopts, plus any of its own it no longer needs),
+ * the globals section it creates when one is missing, and every managed section.
+ * The audience is people who read config files, so nothing apply does is hidden
+ * from the preview. Option order is exactly the order write() sets them (both
+ * iterate desired()'s insertion order), so the preview and the write cannot
+ * disagree about section layout. */
 function preview(s) {
 	if (validate(s))
 		return null;
 
-	return desired(s).map(function(d) {
+	var out = [], state = audit();
+
+	if (state.foreign.length)
+		return null;                 // apply will refuse; the banner explains why
+
+	var want = desired(s),
+	    wantNames = {};
+
+	want.forEach(function(d) { wantNames[d.name] = true; });
+
+	state.stock.concat(state.owned).forEach(function(sec) {
+		if (!wantNames[sec.name])
+			out.push("# removed: %s '%s'".format(sec.type, sec.name));
+	});
+
+	if (!uci.sections('mwan3', 'globals').length)
+		out.push("config globals 'globals'\n\toption mmx_mask '0x3F00'");
+
+	want.forEach(function(d) {
 		var lines = [ "config %s '%s'".format(d.type, d.name) ];
 
-		optKeys(d.options).forEach(function(k) {
+		Object.keys(d.options).forEach(function(k) {
+			if (k.charAt(0) === '.')
+				return;
+
 			var v = d.options[k];
 
 			if (Array.isArray(v))
@@ -372,8 +420,10 @@ function preview(s) {
 				lines.push("\toption %s '%s'".format(k, v));
 		});
 
-		return lines.join('\n');
-	}).join('\n\n');
+		out.push(lines.join('\n'));
+	});
+
+	return out.join('\n\n');
 }
 
 return baseclass.extend({
