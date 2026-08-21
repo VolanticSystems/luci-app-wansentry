@@ -376,8 +376,20 @@ function write(s) {
 		Object.keys(d.options).forEach(function(k) {
 			if (k.charAt(0) === '.')
 				return;
-			if (!valueEq(uci.get('mwan3', d.name, k), d.options[k])) {
-				uci.set('mwan3', d.name, k, d.options[k]);
+
+			var want = d.options[k];
+
+			if (!valueEq(uci.get('mwan3', d.name, k), want)) {
+				/* Clear a list before setting it. uci.set on an array can append
+				 * to the already-staged list rather than replace it, which doubles
+				 * use_member/track_ip on a re-apply (observed as
+				 * primary,backup,primary,backup). unset-then-set forces a clean
+				 * replacement, and because it only runs when the value actually
+				 * differs, it also self-heals an already-doubled section on the
+				 * next apply without disturbing an idempotent one. */
+				if (Array.isArray(want))
+					uci.unset('mwan3', d.name, k);
+				uci.set('mwan3', d.name, k, want);
 				ops++;
 			}
 		});
