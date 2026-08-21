@@ -1,0 +1,26 @@
+{
+	"luci-app-wansentry": {
+		"description": "Grant access to dual-WAN failover configuration",
+		"read": {
+			"file": {
+				"/sbin/logread -e mwan3": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec" ],
+				"luci": [ "getInitList" ],
+				"luci-rpc": [ "getNetworkDevices" ],
+				"mwan3": [ "status" ],
+				"network.interface": [ "dump" ],
+				"uci": [ "changes", "get" ]
+			},
+			"uci": [ "mwan3", "network", "wansentry" ]
+		},
+		"write": {
+			"ubus": {
+				"luci": [ "setInitAction" ],
+				"uci": [ "add", "apply", "confirm", "delete", "order", "rename", "set" ]
+			},
+			"uci": [ "mwan3", "wansentry" ]
+		}
+	}
+}

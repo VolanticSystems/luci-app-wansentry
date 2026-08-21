@@ -1,0 +1,13 @@
+{
+	"admin/network/wansentry": {
+		"title": "WAN Failover",
+		"order": 27,
+		"action": {
+			"type": "view",
+			"path": "wansentry/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-wansentry" ]
+		}
+	}
+}

@@ -1,0 +1,42 @@
+# wansentry ships disabled. Nothing is written to /etc/config/mwan3 and the
+# mwan3 service is left alone until the settings screen is applied once.
+
+config wansentry 'main'
+	# Master switch. 0 = wansentry's generated mwan3 interfaces are written
+	# with `enabled 0` (mwan3 becomes inert and traffic falls through to the
+	# normal routing table) and the mwan3 service is stopped and disabled.
+	option enabled '0'
+
+	# netifd interface names, as they appear in /etc/config/network.
+	# Empty until the user picks them on the settings screen.
+	option primary ''
+	option backup ''
+
+	# Health-check targets. mwan3 pings these through each uplink's own
+	# routing table. Two hosts on different operators is the point: one
+	# ICMP-hostile or briefly unreachable target must not cause a failover,
+	# so the generated config sets `reliability 1` (any one host answering
+	# keeps the uplink up).
+	list track_ip '1.1.1.1'
+	list track_ip '8.8.8.8'
+
+	# Seconds between health checks.
+	option interval '5'
+
+	# Consecutive failed checks before an uplink is declared offline.
+	# interval * down = worst-case detection time (default 15 s).
+	option down '3'
+
+	# Consecutive successful checks before an uplink is declared online
+	# again. Deliberately higher than `down`: flapping back onto a shaky
+	# primary is worse than staying on a working backup for another 15 s.
+	option up '6'
+
+	# 1 = traffic returns to the primary as soon as it recovers.
+	# 0 = established connections stay pinned to the uplink they started on
+	#     (mwan3 rule stickiness); new connections still prefer the primary.
+	option failback '1'
+
+	# 1 = flush the conntrack table on every uplink up/down transition, so
+	# existing connections are not left pinned to a dead gateway.
+	option flush_conntrack '1'
