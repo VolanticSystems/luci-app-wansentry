@@ -122,12 +122,13 @@ function clamp(val, min, max, fallback) {
 
 /* --------------------------------------------------------- settings read */
 
-/* Reads /etc/config/wansentry through uci, which means pending (saved but not
- * yet committed) form values are picked up too — the generator runs after
- * form.Map.save() and before uci.apply(). */
-function settings() {
+/* Normalise a raw {opt: value} map (clamping, derived timeout) into the settings
+ * object the rest of the generator consumes. Kept separate from the uci read so
+ * the LIVE form values can be normalised the same way for the on-screen preview,
+ * before anything is saved. */
+function normalize(raw) {
 	var g = function(opt, def) {
-		var v = uci.get('wansentry', 'main', opt);
+		var v = raw[opt];
 
 		return (v == null || v === '') ? def : v;
 	};
@@ -141,7 +142,7 @@ function settings() {
 		enabled:  g('enabled', '0') === '1',
 		primary:  g('primary', ''),
 		backup:   g('backup', ''),
-		track_ip: L.toArray(uci.get('wansentry', 'main', 'track_ip')),
+		track_ip: L.toArray(raw.track_ip),
 		interval: interval,
 		down:     clamp(g('down', '3'), 1, 100, 3),
 		up:       clamp(g('up', '6'), 1, 100, 6),
@@ -151,6 +152,21 @@ function settings() {
 		failback: g('failback', '1') === '1',
 		flush:    g('flush_conntrack', '1') === '1'
 	};
+}
+
+/* Reads /etc/config/wansentry through uci (loaded or pending values). */
+function settings() {
+	return normalize({
+		enabled:         uci.get('wansentry', 'main', 'enabled'),
+		primary:         uci.get('wansentry', 'main', 'primary'),
+		backup:          uci.get('wansentry', 'main', 'backup'),
+		track_ip:        uci.get('wansentry', 'main', 'track_ip'),
+		interval:        uci.get('wansentry', 'main', 'interval'),
+		down:            uci.get('wansentry', 'main', 'down'),
+		up:              uci.get('wansentry', 'main', 'up'),
+		failback:        uci.get('wansentry', 'main', 'failback'),
+		flush_conntrack: uci.get('wansentry', 'main', 'flush_conntrack')
+	});
 }
 
 /* --------------------------------------------------- desired mwan3 model */
@@ -437,6 +453,7 @@ return baseclass.extend({
 	MEMBER_BACKUP: MEMBER_BACKUP,
 
 	settings: settings,
+	normalize: normalize,
 	desired: desired,
 	audit: audit,
 	validate: validate,

@@ -31,13 +31,6 @@ var callMwan3Status = rpc.declare({
 	reject: true
 });
 
-var callInitAction = rpc.declare({
-	object: 'luci',
-	method: 'setInitAction',
-	params: [ 'name', 'action' ],
-	expect: { result: false }
-});
-
 /* ------------------------------------------------------------------- css */
 
 var STYLE_ID = 'wansentry-style';
@@ -179,8 +172,7 @@ function events(limit) {
 
 return baseclass.extend({
 	rpc: {
-		status: callMwan3Status,
-		initAction: callInitAction
+		status: callMwan3Status
 	},
 
 	injectCSS: injectCSS,
