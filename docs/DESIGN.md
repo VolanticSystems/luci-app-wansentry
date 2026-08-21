@@ -270,33 +270,39 @@ is not left guessing why the screen is read-only.
 Save and Apply, in order:
 
 1. `form.Map.save()` — writes `/etc/config/wansentry` into uci's pending set.
+   (A foreign-config check runs *before* this, so a refusal never leaves
+   wansentry changes staged.)
 2. `generator.write()` — reads those pending values straight back and stages
    the mwan3 sections alongside them. Throws on foreign config or invalid
    input; the error surfaces as a notification and nothing is committed.
 3. `uci.save()` — pushes the mwan3 changes to the server's staging area. Easy
    to forget: `form.Map.save()` only pushes its own.
-4. **Service state**, *before* the commit:
-   - turning failover **off**: `stop` then `disable`. Stopping first
-     deregisters mwan3's procd reload trigger, so the commit that follows
-     cannot hand a running daemon straight back to procd.
-   - turning failover **on**: `enable` then `restart`. Restarting first means
-     the trigger is registered by the time the commit fires it. The second or
-     so mwan3 spends on the previous configuration is harmless: it is either
-     the same configuration with tracking off, or the package defaults it was
-     already running.
-5. `uci.apply(L.env.apply_rollback)` — commits both configs with the same
-   rollback window LuCI's own Apply button uses. The default 10 s window is too
-   tight: a slow confirm round trip lets rpcd silently revert the write.
+4. `ui.changes.apply(true)` — hands the commit to LuCI's own apply flow, which
+   owns the rollback-protected commit, the confirm countdown, and the reload,
+   all driven from this document. A manual `uci.apply().then(reload)` races the
+   confirm (uci.apply resolves before the +1000 ms confirm is scheduled, and the
+   reload cancels it, so rpcd silently rolls the config back ~90 s later); using
+   LuCI's own flow avoids that entirely.
 
-Doing step 4 after step 5 was the first implementation, and it is wrong: the
-service state then rides on a promise that resolves after the page has already
-been told the apply succeeded, and any hiccup leaves a failover daemon running
-against a configuration that says it should not be.
+**The browser never touches init scripts.** Service enable/disable is *not* done
+from the apply handler. `/etc/init.d/mwan3 enable|disable` writes `/etc/rc.d`
+symlinks, which UCI's rollback snapshot does **not** cover (rollback reverts only
+`/etc/config`). Doing the enable/disable in the browser, before or after the
+transactional commit, could therefore leave the service state and the config
+disagreeing if the apply is rolled back — for a failover package, the worst
+outcome is exactly that: config says enabled, service disabled, failover
+silently unarmed after the next reboot. Instead a tiny router-side init script,
+`/etc/init.d/wansentry`, reconciles the mwan3 service (enable + start, or stop +
+disable) to the committed `wansentry.enabled`, on the wansentry reload trigger
+and again at boot. A rollback re-fires the trigger with the reverted config and
+the service follows it, so the two can never diverge. This also means wansentry
+grants **no** `luci.setInitAction` ACL: the browser has no init-control right at
+all (see §8).
 
-**Safety net.** Even if step 4 never runs, wansentry disabled is inert: the
-generated interfaces carry `enabled '0'`, so the policy has no members, so
-`last_resort 'default'` sends everything to the kernel routing table. A
-disabled wansentry cannot break routing whether or not mwan3 is running.
+**Safety net.** Even if the reconciler never runs, wansentry disabled is inert:
+the generated interfaces carry `enabled '0'`, so the policy has no members, so
+`last_resort 'default'` sends everything to the kernel routing table. A disabled
+wansentry cannot break routing whether or not mwan3 is running.
 
 ### 6.5 Idempotency
 
@@ -386,8 +392,9 @@ next person does not have to rediscover the thread.
 
     Makefile                                    LuCI feed, PKGARCH all, +mwan3 +luci-base
     root/etc/config/wansentry                   defaults, ships disabled
+    root/etc/init.d/wansentry                   reconciles mwan3 service to committed config
     root/usr/share/luci/menu.d/…json            Network -> WAN Failover
-    root/usr/share/rpcd/acl.d/…json             ACL (see scoping caveat below)
+    root/usr/share/rpcd/acl.d/…json             ACL
     htdocs/…/view/wansentry/{common,generator,overview}.js
 
 ACL grants, and why each is needed:
@@ -399,19 +406,19 @@ ACL grants, and why each is needed:
 | ubus read | `mwan3.status` | the status panel |
 | ubus read | `file.exec` + `/sbin/logread -l 200 -e mwan3` | the event list, that exact command only |
 | ubus read | `luci-rpc.getNetworkDevices`, `network.interface.dump` | interface picker |
-| ubus write | `luci.setInitAction` | the master toggle owning the mwan3 service |
 
-Notably absent: any grant on `firewall`, `dhcp` or `system`. wansentry does not
-touch DNS (§7.1) and has no reason to read the firewall.
+Notably absent: any grant on `firewall`, `dhcp` or `system`, and — deliberately —
+**no `luci.setInitAction`**. wansentry does not touch DNS (§7.1), has no reason to
+read the firewall, and the browser never controls an init script.
 
-**Scoping limitation on `luci.setInitAction`.** rpcd's init-action right has no
-per-script granularity: granting it grants service control (start, stop,
-restart, enable, disable) over *every* init script on the router, not just
-mwan3. That is broader than every other grant in the table above, which is
-scoped exactly to `wansentry`, `mwan3` and `network`. It is not currently
-possible to hand out a narrower right through stock rpcd for this. A future
-option is a small custom rpcd ubus plugin that exposes only mwan3
-start/stop/restart, replacing this grant with one actually scoped to mwan3.
+**No init-control right, by design.** rpcd's `luci.setInitAction` has no
+per-script granularity: granting it would give service control over *every* init
+script on the router. An earlier build did grant it (to enable/disable mwan3 from
+the apply handler) and this doc previously recorded that breadth as an accepted
+limitation. It is no longer granted: service state is reconciled router-side by
+`/etc/init.d/wansentry` from the committed config (§6.4), so the browser needs no
+init right at all. Every grant that remains is scoped exactly to `wansentry`,
+`mwan3`, `network`, or one literal command string.
 
 ## 9. Risks / open items
 
