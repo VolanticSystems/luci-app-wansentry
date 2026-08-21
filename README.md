@@ -7,7 +7,9 @@ that implements failover, from nine fields on a single LuCI page, and then owns
 what it generated. Pick a primary uplink, pick a backup, name two health-check
 hosts, apply. Nothing else has to be visited.
 
-> Status: **in development** — tested on hardware, not yet released.
+> Status: **in development** — tested on hardware, not yet released. Not yet
+> tested with a genuinely live second uplink; an actual switchover under load
+> is unverified.
 
 ## Why
 
@@ -69,8 +71,8 @@ applying an unchanged configuration produces zero uci operations.
 - **If both uplinks are marked offline, traffic falls through to the kernel
   routing table** rather than being blackholed. A tracking false positive
   should degrade to plain routing, not to a total outage.
-- **IPv4 only in v1.** IPv6 failover does not move on a default-route metric
-  and is not honestly solvable by pretending otherwise.
+- **IPv4 only in v1.** IPv6 failover does not move on a default-route metric,
+  and pretending otherwise does not solve it.
 
 Each of these is argued, with sources, in [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -84,7 +86,8 @@ rather than pretending the problem does not exist.
 
 ## Install
 
-    opkg install luci-app-wansentry     # pulls in mwan3
+    apk update
+    apk install luci-app-wansentry     # pulls in mwan3
 
 Then **Network → WAN Failover**.
 

@@ -191,9 +191,12 @@ function desired(s) {
 		dest_ip:    '0.0.0.0/0',
 		family:     'ipv4',
 		use_policy: POLICY,
-		/* Stickiness is the only lever mwan3 gives us over failback, and it
-		 * only holds *established* connections: new connections always follow
-		 * the policy back to the primary. See docs/DESIGN.md §6.3. */
+		/* Stickiness is the only lever mwan3 gives us over failback. It is an
+		 * ipset keyed on source IP with a timeout: a client that failed over
+		 * keeps using the backup for up to `timeout` seconds after its last
+		 * matching packet, while other clients follow the policy back to the
+		 * primary immediately. Source-IP based, not per-connection. See
+		 * docs/DESIGN.md §7.4. */
 		sticky:     s.failback ? '0' : '1'
 	};
 

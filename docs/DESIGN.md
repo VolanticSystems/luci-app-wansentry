@@ -129,7 +129,7 @@ asymmetry drives the ordering in §6.4.
     mwan3 2.12.x
 
 No file is written by hand, no template is rendered, and nothing in this
-package runs a shell — with exactly one exception, `logread -e mwan3` for the
+package runs a shell — with exactly one exception, `logread -l 200 -e mwan3` for the
 event list (§5.3), which has no ubus equivalent.
 
 Three source files:
@@ -167,9 +167,9 @@ One menu entry, `Network → WAN Failover`. Top to bottom:
 mwan3 logs one line per transition via `logger -t mwan3track`:
 `Interface wan (wan) is online`. There is no ubus object for the system log, so
 this is the one place the app shells out, through `fs.exec('/sbin/logread',
-['-e','mwan3'])`, with the ACL granting exec on exactly that command string and
-nothing else. If the ACL is missing the panel renders an explanatory empty
-state rather than breaking.
+['-l','200','-e','mwan3'])`, with the ACL granting exec on exactly that command
+string and nothing else. If the ACL is missing the panel renders an
+explanatory empty state rather than breaking.
 
 ## 6. The generated configuration
 
@@ -343,7 +343,7 @@ gateway, and per RFC 5461 TCP treats the resulting ICMP unreachables as a soft
 error, so clients retransmit into a dead path for minutes instead of
 reconnecting. wansentry writes all four `flush_conntrack` actions by default.
 
-Two honest caveats, both surfaced in the UI:
+Two caveats, both surfaced in the UI:
 
 - mwan3's flush is **global** (`echo f > /proc/net/nf_conntrack`), so
   connections on the healthy uplink are dropped too.
@@ -352,16 +352,22 @@ Two honest caveats, both surfaced in the UI:
   for that is a selective, mark-aware flush hooked into `/etc/mwan3.user` on
   the `disconnected` event — about fifteen lines, and a candidate for v2 (§10).
 
-### 7.4 Failback stickiness — honest about what mwan3 can do
+### 7.4 Failback stickiness — what mwan3 can do
 
 mwan3 has no "latch onto the backup" mode. The only lever is rule stickiness,
-and it holds *established* connections only; new connections always follow the
-policy back to the primary.
+and it is source-IP and ipset-timeout based, not a matter of established versus
+new connections: when sticky is on, mwan3 records a client's source IP in an
+ipset the first time it matches the rule, and any packet from that IP,
+established connection or brand new one, keeps matching the same member until
+the ipset entry ages out after the configured idle `timeout`.
 
 So the toggle is labelled "Return to primary when it recovers" and does exactly
-what mwan3 can do: on writes `sticky '0'` (everything moves back immediately),
-off writes `sticky '1'` plus a 600 s idle `timeout` (established connections
-stay where they started, new ones prefer the primary). The help text says
+what mwan3 can do: on writes `sticky '0'` (no per-client memory, so every
+client's next packet is evaluated fresh against the policy and everything moves
+back immediately), off writes `sticky '1'` plus a 600 s idle `timeout` (a
+client that failed over keeps using the backup for up to 10 minutes after its
+last matching packet; a client that has been idle longer than that, or a new
+client, follows the policy back to the primary right away). The help text says
 outright that "off" softens failback rather than preventing it. This is a
 deliberate deviation from a plain reading of "sticky off": sticky is off in the
 default configuration, and only the non-default branch turns it on.
@@ -381,7 +387,7 @@ next person does not have to rediscover the thread.
     Makefile                                    LuCI feed, PKGARCH all, +mwan3 +luci-base
     root/etc/config/wansentry                   defaults, ships disabled
     root/usr/share/luci/menu.d/…json            Network -> WAN Failover
-    root/usr/share/rpcd/acl.d/…json             least-privilege ACL
+    root/usr/share/rpcd/acl.d/…json             ACL (see scoping caveat below)
     htdocs/…/view/wansentry/{common,generator,overview}.js
 
 ACL grants, and why each is needed:
@@ -391,12 +397,21 @@ ACL grants, and why each is needed:
 | uci read | `wansentry`, `mwan3`, `network` | the form, the generator, the interface picker |
 | uci write | `wansentry`, `mwan3` | the two configs it owns |
 | ubus read | `mwan3.status` | the status panel |
-| ubus read | `file.exec` + `/sbin/logread -e mwan3` | the event list, that exact command only |
+| ubus read | `file.exec` + `/sbin/logread -l 200 -e mwan3` | the event list, that exact command only |
 | ubus read | `luci-rpc.getNetworkDevices`, `network.interface.dump` | interface picker |
 | ubus write | `luci.setInitAction` | the master toggle owning the mwan3 service |
 
 Notably absent: any grant on `firewall`, `dhcp` or `system`. wansentry does not
 touch DNS (§7.1) and has no reason to read the firewall.
+
+**Scoping limitation on `luci.setInitAction`.** rpcd's init-action right has no
+per-script granularity: granting it grants service control (start, stop,
+restart, enable, disable) over *every* init script on the router, not just
+mwan3. That is broader than every other grant in the table above, which is
+scoped exactly to `wansentry`, `mwan3` and `network`. It is not currently
+possible to hand out a narrower right through stock rpcd for this. A future
+option is a small custom rpcd ubus plugin that exposes only mwan3
+start/stop/restart, replacing this grant with one actually scoped to mwan3.
 
 ## 9. Risks / open items
 
