@@ -16,7 +16,6 @@
 		},
 		"write": {
 			"ubus": {
-				"luci": [ "setInitAction" ],
 				"uci": [ "add", "apply", "confirm", "delete", "order", "rename", "set" ]
 			},
 			"uci": [ "mwan3", "wansentry" ]

@@ -1,0 +1,51 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 VolanticSystems
+#
+# wansentry is a configuration generator, not a daemon. This init script exists
+# only to reconcile the mwan3 SERVICE state (enabled/running) to the committed
+# /etc/config/wansentry, and it is the reason the UI never touches init scripts
+# from the browser.
+#
+# Why router-side and not from the LuCI apply handler:
+#   /etc/init.d/mwan3 enable|disable writes /etc/rc.d symlinks, which UCI's
+#   rollback snapshot does NOT cover (rollback only reverts /etc/config). Doing
+#   the enable/disable in the browser, before or after the transactional commit,
+#   can therefore leave the service state and the config disagreeing if the
+#   apply is rolled back (a dropped connection during the confirm window). By
+#   driving the service purely from the committed config -- on the wansentry
+#   reload trigger, and again at boot -- the two can never diverge: a rollback
+#   re-fires the trigger with the reverted config and the service follows it.
+
+START=21
+STOP=89
+USE_PROCD=1
+
+reconcile() {
+	local enabled
+	config_load wansentry
+	config_get_bool enabled main enabled 0
+
+	if [ "$enabled" = 1 ]; then
+		# Own the enable symlink; start only if mwan3 is not already up, so an
+		# ordinary settings edit does not restart a running mwan3 (mwan3's own
+		# config reload trigger handles picking up the regenerated rules).
+		/etc/init.d/mwan3 enable 2>/dev/null
+		/etc/init.d/mwan3 running >/dev/null 2>&1 || /etc/init.d/mwan3 start 2>/dev/null
+	else
+		/etc/init.d/mwan3 stop 2>/dev/null
+		/etc/init.d/mwan3 disable 2>/dev/null
+	fi
+}
+
+start_service() {
+	reconcile
+}
+
+reload_service() {
+	reconcile
+}
+
+service_triggers() {
+	procd_add_reload_trigger wansentry
+}

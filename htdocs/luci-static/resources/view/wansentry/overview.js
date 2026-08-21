@@ -119,23 +119,6 @@ function lane(role, name, st, active) {
 	]);
 }
 
-/* The master toggle owns the mwan3 init script as well as the configuration:
- * a disabled wansentry must not leave a failover daemon running, and an
- * enabled one must not depend on somebody having enabled mwan3 by hand.
- *
- * An ACL gap or a missing init script must not make a successful configuration
- * apply look like a failure, so this never rejects; if mwan3 does not come up,
- * the status panel says so in plain words on the next render. */
-function sync() {
-	var on = gen.settings().enabled;
-
-	return ws.rpc.initAction('mwan3', on ? 'enable' : 'stop').then(function() {
-		return ws.rpc.initAction('mwan3', on ? 'restart' : 'disable');
-	}).catch(function() {
-		return null;
-	});
-}
-
 function eventList(events) {
 	if (events === null)
 		return E('div', { 'class': 'ws-sub' }, [
@@ -378,7 +361,16 @@ return view.extend({
 
 			poll.add(L.bind(self.refresh, self), POLL_INTERVAL);
 
-			var previewText = gen.preview(gen.settings());
+			self.previewNode = E('div', {});
+			self.renderPreview();
+
+			/* Live preview: re-render whenever any widget changes. m.render()
+			 * has resolved, so the option widgets exist; hooking each one's
+			 * change/keyup event keeps the "Generated mwan3 configuration" card
+			 * in step with the form instead of showing the last-applied values.
+			 * gen.settings() reads uci (stale until save), so the preview is fed
+			 * the LIVE widget values via liveSettings() instead. */
+			self.hookPreview();
 
 			return E([], [
 				E([], self.renderBanners(mwan3Loaded, audit)),
@@ -391,12 +383,62 @@ return view.extend({
 
 				ws.card(_('Generated mwan3 configuration'),
 					_('written to /etc/config/mwan3 on apply'),
-					previewText
-						? E('pre', { 'class': 'ws-pre' }, [ previewText ])
-						: E('div', { 'class': 'ws-sub' }, [ _('Complete the settings above to see the configuration this screen will generate.') ])),
+					self.previewNode),
 
 				self.renderLimits()
 			]);
+		});
+	},
+
+	/* Build a raw {opt: value} map from the current widget values and normalise
+	 * it the same way a uci read would be, so the preview matches exactly what a
+	 * save would generate. */
+	liveSettings: function() {
+		var m = this.map;
+		var fv = function(name) {
+			var o = m && m.lookupOption ? m.lookupOption(name, 'main') : null;
+			return (o && o[0]) ? o[0].formvalue('main') : null;
+		};
+
+		return gen.normalize({
+			enabled:         fv('enabled'),
+			primary:         fv('primary'),
+			backup:          fv('backup'),
+			track_ip:        fv('track_ip'),
+			interval:        fv('interval'),
+			down:            fv('down'),
+			up:              fv('up'),
+			failback:        fv('failback'),
+			flush_conntrack: fv('flush_conntrack')
+		});
+	},
+
+	renderPreview: function() {
+		if (!this.previewNode)
+			return;
+
+		var text = gen.preview(this.liveSettings());
+
+		dom.content(this.previewNode, text
+			? E('pre', { 'class': 'ws-pre' }, [ text ])
+			: E('div', { 'class': 'ws-sub' }, [ _('Complete the settings above to see the configuration this screen will generate.') ]));
+	},
+
+	hookPreview: function() {
+		var self = this, m = this.map;
+		var opts = [ 'enabled', 'primary', 'backup', 'track_ip',
+		             'interval', 'down', 'up', 'failback', 'flush_conntrack' ];
+		var update = function() { self.renderPreview(); };
+
+		opts.forEach(function(name) {
+			var o = m.lookupOption ? m.lookupOption(name, 'main') : null;
+			var w = (o && o[0]) ? o[0].getUIElement('main') : null;
+			var node = w && w.node ? w.node : null;
+
+			if (node) {
+				node.addEventListener('change', update);
+				node.addEventListener('keyup', update);
+			}
 		});
 	},
 
@@ -445,30 +487,18 @@ return view.extend({
 			if (!ok)
 				return;
 
-			/* The init actions run BEFORE the commit, deliberately.
-			 *
-			 * Turning failover off: stopping mwan3 first deregisters its procd
-			 * reload trigger, so committing the config cannot hand a running
-			 * daemon back to procd a moment after we asked for it to stop.
-			 *
-			 * Turning failover on: restarting first means the trigger is
-			 * registered by the time the commit fires it, and the second or so
-			 * mwan3 spends on the previous configuration is harmless — it is
-			 * either the same configuration with tracking off, or the mwan3
-			 * package defaults it was already running anyway. */
-			return sync().then(function() {
-				/* Hand the commit to LuCI's own apply flow. It owns the
-				 * rollback-protected commit, the confirm countdown, and the
-				 * reload, and it drives all three from THIS document — so the
-				 * confirm can never be lost to a reload that fires before the
-				 * confirm call is sent (the bug a manual uci.apply().then(
-				 * reload) walks straight into: uci.apply resolves before the
-				 * +1000 ms confirm is scheduled, and the reload cancels it,
-				 * leaving rpcd to roll the config back ~90 s later). */
-				return ui.changes.apply(true);
-			}).catch(function(e) {
-				ui.addNotification(null, E('p', {}, [ _('Apply failed: %s').format(e.message || e) ]), 'danger');
-			});
+			/* Hand the commit to LuCI's own apply flow, and do NOT touch the
+			 * mwan3 service from here. It owns the rollback-protected commit, the
+			 * confirm countdown, and the reload, driven from this document so the
+			 * confirm cannot be lost to an early reload (the bug a manual
+			 * uci.apply().then(reload) walks into). Service enable/disable is
+			 * reconciled router-side by /etc/init.d/wansentry on the wansentry
+			 * reload trigger: init-script symlinks are not covered by UCI
+			 * rollback, so managing them from the browser could leave the service
+			 * and the config disagreeing after a rolled-back apply. Reconciling
+			 * from the committed config keeps them in lockstep and self-heals at
+			 * boot. */
+			return ui.changes.apply(true);
 		});
 	},
 
