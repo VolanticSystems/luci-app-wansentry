@@ -365,7 +365,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'failback', _('Return to primary when it recovers'),
-			_('On: as soon as the primary passes its recovery threshold, everything moves back to it. Off: established connections stay pinned to the uplink they started on for up to 10 idle minutes, while new connections still prefer the primary. mwan3 has no way to latch permanently onto the backup, so "off" softens the failback rather than preventing it.'));
+			_('On: as soon as the primary passes its recovery threshold, traffic moves back to it. Off: sets mwan3 stickiness, an ipset keyed on source IP. A client that failed over keeps using the backup for up to 10 minutes after its last matching packet; other clients follow the policy back to the primary immediately. It is source-IP stickiness, not per-connection, and mwan3 cannot latch permanently onto the backup, so "off" softens the failback rather than preventing it.'));
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'flush_conntrack', _('Flush connection tracking on switchover'),
