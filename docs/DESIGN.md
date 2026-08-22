@@ -303,6 +303,27 @@ the service follows it, so the two can never diverge. This also means wansentry
 grants **no** `luci.setInitAction` ACL: the browser has no init-control right at
 all (see §8).
 
+**The reconciler is ownership-gated, and the gate distinguishes "owns nothing"
+from "someone else owns something."** The reconciler is the service-side mirror
+of the generator's `isOwned()`: the generator refuses to touch mwan3 *config* it
+did not write, and the service must refuse just as hard, or it would stop a
+user's hand-built mwan3 at boot, since `enabled=0` is the shipped default and
+that is the state before the settings page has ever been opened. It therefore
+counts `owned` (mwan3 sections carrying `option wansentry '1'`) against
+`managed` (all mwan3 `interface`/`member`/`policy`/`rule` sections) and hands
+off entirely, touching nothing, the moment any *foreign* managed section
+exists.
+
+The distinction matters in one specific case that an "owns nothing, do nothing"
+gate gets wrong. A **first** enable that is rolled back leaves the config
+reverted (so `owned` is zero) while the `/etc/rc.d` symlink written during the
+apply window survives, because UCI rollback does not cover it. An ownership gate
+keyed only on `owned > 0` would decline to act and strand an enabled, running
+mwan3 with an empty configuration. Because `foreign` is separately known to be
+zero there, the reconciler can safely stop and disable mwan3 in that case while
+still leaving a genuinely foreign mwan3 running untouched. Both halves are
+verified on hardware.
+
 **Safety net.** Even if the reconciler never runs, wansentry disabled is inert:
 the generated interfaces carry `enabled '0'`, so the policy has no members, so
 `last_resort 'default'` sends everything to the kernel routing table. A disabled
