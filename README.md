@@ -7,9 +7,12 @@ that implements failover, from nine fields on a single LuCI page, and then owns
 what it generated. Pick a primary uplink, pick a backup, name two health-check
 hosts, apply. Nothing else has to be visited.
 
-> Status: **in development** — tested on hardware, not yet released. Not yet
-> tested with a genuinely live second uplink; an actual switchover under load
-> is unverified.
+> Status: **working, published as a demonstration project.** Developed and
+> tested on real hardware, including config generation, ownership refusal,
+> rollback and service reconciliation. **Not** yet tested with a genuinely live
+> second uplink: an actual switchover under load is unverified, so treat this as
+> a reference implementation rather than something to put in front of an uplink
+> you depend on. See *Known limitations*.
 
 ## Why
 
@@ -86,10 +89,51 @@ rather than pretending the problem does not exist.
 
 ## Install
 
-    apk update
-    apk install luci-app-wansentry     # pulls in mwan3
+**This package is not in the official OpenWrt feeds**, so there is no one-line
+install from a stock device. Build it with the OpenWrt SDK for your release and
+architecture, then install the resulting package.
+
+Build:
+
+    # from an OpenWrt SDK tree matching your device's release
+    ./scripts/feeds update -a
+    ./scripts/feeds install -a
+    git clone https://github.com/VolanticSystems/luci-app-wansentry.git \
+        package/luci-app-wansentry
+    make package/luci-app-wansentry/compile V=s
+
+Install on the device (copy the built package over first):
+
+    apk add --allow-untrusted /tmp/luci-app-wansentry-*.apk   # pulls in mwan3
+
+`--allow-untrusted` is required because a locally built package is not signed
+by an OpenWrt repository key. On releases still using opkg, use
+`opkg install ./luci-app-wansentry_*.ipk` instead.
 
 Then **Network → WAN Failover**.
+
+## Known limitations
+
+Documented up front rather than left to be discovered.
+
+- **A live switchover under load has not been tested.** Config generation,
+  the ownership model, rollback behaviour and service reconciliation are all
+  verified on hardware, but the development bench had only one real uplink, so
+  the end-to-end event this package exists to handle (a primary WAN failing
+  while traffic is flowing) is unverified. This is the reason for the status
+  note above.
+- **DNS is not solved, and cannot be solved here.** dnsmasq merges upstream
+  resolvers from every interface that is up and does not consult failover
+  state, so name resolution can still be attempted through a dead uplink.
+  mwan3 has the same gap. wansentry surfaces the failure mode and the dnsmasq
+  workaround on screen instead of pretending otherwise.
+- **Failover only, by design.** No load balancing, no per-destination policy
+  routing. If you need those, use mwan3 directly; wansentry deliberately
+  refuses to grow into a second mwan3 UI.
+- **wansentry only touches what it created.** It will not modify or remove
+  mwan3 configuration it did not generate, and the service-side reconciler
+  applies the same rule. An existing hand-built mwan3 setup is left alone, and
+  wansentry will decline to manage it rather than adopt it.
 
 ## License
 
