@@ -39,10 +39,17 @@ jobs:
         # release that understands the real dialect instead of suppressing
         # the warning.
         run: |
-          set -eu
+          set -eu -o pipefail
           ver=v0.11.0
-          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${ver}/shellcheck-${ver}.linux.x86_64.tar.xz" \
-            | sudo tar -xJf - --strip-components=1 -C /usr/local/bin "shellcheck-${ver}/shellcheck"
+          sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          # Download to a file and verify before unpacking: piping curl straight
+          # into tar hides curl's exit status without pipefail, and executes
+          # whatever arrives with no integrity check at all.
+          curl -fsSL -o /tmp/sc.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${ver}/shellcheck-${ver}.linux.x86_64.tar.xz"
+          echo "${sha}  /tmp/sc.tar.xz" | sha256sum -c -
+          sudo tar -xJf /tmp/sc.tar.xz --strip-components=1 \
+            -C /usr/local/bin "shellcheck-${ver}/shellcheck"
           shellcheck --version
 
       - name: Run shellcheck
@@ -57,9 +64,13 @@ jobs:
           # would otherwise be passed to shellcheck as a literal filename.
           files=$(find root/etc/init.d root/etc/uci-defaults \
                     -type f 2>/dev/null || true)
+          # Both packages DO ship an init script, so an empty list means the
+          # tree moved or a rename broke the path, not that there is nothing to
+          # check. Passing silently here is how a lint job goes green while
+          # verifying nothing.
           if [ -z "$files" ]; then
-            echo "No shell scripts to check."
-            exit 0
+            echo "::error::no shell scripts found under root/etc: expected an init script"
+            exit 1
           fi
           echo "Checking:"; echo "$files"
           # word splitting is intended here
@@ -149,9 +160,11 @@ jobs:
           set -eu
           shopt -s nullglob
           files=(htdocs/luci-static/resources/view/wansentry/*.js)
+          # This package ships view JS, so an empty glob means the path moved,
+          # not that there is nothing to lint. Fail rather than pass vacuously.
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No view JS files found, nothing to lint."
-            exit 0
+            echo "::error::no view JS found under htdocs/luci-static/resources/view"
+            exit 1
           fi
           "${{ runner.temp }}/node_modules/.bin/eslint" \
             --no-config-lookup \
