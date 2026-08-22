@@ -22,9 +22,21 @@ STOP=89
 USE_PROCD=1
 
 reconcile() {
-	local enabled
+	local enabled owned
 	config_load wansentry
 	config_get_bool enabled main enabled 0
+
+	# Ownership gate, the service-side mirror of the generator's isOwned(). The
+	# generator refuses to touch mwan3 CONFIG it did not write; the service must
+	# refuse just as hard, or the disable branch below stops and disables a user's
+	# hand-configured mwan3 at boot (enabled=0 is the shipped default), before the
+	# settings page has ever been opened. wansentry owns the mwan3 config only
+	# when at least one mwan3 section carries `option wansentry '1'`, which it sets
+	# on every section it generates. Own nothing -> touch nothing, config OR
+	# service. (On a fresh install nothing is generated, so owned is 0 and mwan3
+	# is left entirely alone, exactly as root/etc/config/wansentry promises.)
+	owned=$(uci -q show mwan3 | grep -c "\.wansentry='1'")
+	[ "${owned:-0}" -gt 0 ] || return 0
 
 	if [ "$enabled" = 1 ]; then
 		# Own the enable symlink; start only if mwan3 is not already up, so an
@@ -33,6 +45,8 @@ reconcile() {
 		/etc/init.d/mwan3 enable 2>/dev/null
 		/etc/init.d/mwan3 running >/dev/null 2>&1 || /etc/init.d/mwan3 start 2>/dev/null
 	else
+		# We own the mwan3 config, so stopping and disabling the service is
+		# turning off our own failover, not a stranger's.
 		/etc/init.d/mwan3 stop 2>/dev/null
 		/etc/init.d/mwan3 disable 2>/dev/null
 	fi
