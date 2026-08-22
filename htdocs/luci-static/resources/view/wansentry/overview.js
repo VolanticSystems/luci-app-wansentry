@@ -304,7 +304,7 @@ return view.extend({
 		/* ------------------------------------------------------- the form */
 
 		var m = new form.Map('wansentry', _('WAN failover'),
-			_('One primary uplink, one backup, and a health check that decides between them. Applying this screen generates a complete minimal mwan3 configuration; nothing else has to be visited.'));
+			_('One primary uplink, one backup, and a health check that decides between them. Applying this screen generates a complete minimal mwan3 configuration. Both uplinks must already exist as working network interfaces; wansentry steers between them, it does not create them.'));
 
 		m.readonly = blocked;
 
