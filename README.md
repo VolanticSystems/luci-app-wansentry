@@ -5,7 +5,8 @@
 `wansentry` does not implement failover. It *generates* the mwan3 configuration
 that implements failover, from nine fields on a single LuCI page, and then owns
 what it generated. Pick a primary uplink, pick a backup, name two health-check
-hosts, apply. Nothing else has to be visited.
+hosts, apply. Provided both uplinks already exist as configured network
+interfaces, nothing else has to be visited.
 
 > Status: **working, published as a demonstration project.** Developed and
 > tested on real hardware, including config generation, ownership refusal,
@@ -22,26 +23,33 @@ flushing on switchover, hotplug integration — is something it has already
 iterated on for a decade. That is not the problem.
 
 The problem is that mwan3 is a *general* policy-routing tool, and its LuCI app
-exposes that generality: six configuration tabs and four status tabs, built
-around Interfaces, Members, Policies and Rules. A pure failover setup needs six
+exposes that generality: separate configuration tabs for Interfaces,
+Members, Policies and Rules, plus globals, and further tabs for status. A pure failover setup needs six
 sections across five of those screens, and none of the concepts it makes you
 learn are ones you asked about. The recurring forum complaint is not that mwan3
 does not work; it is that the documentation is "huge and complex" for what
 people consider a basic two-uplink job.
 
-Roughly half a dozen projects have responded to that by reimplementing failover
-from scratch, starting around 2010. None of them displaced mwan3 and most are
-dead. The one adjacent tool with real traction does detection only and
-deliberately refuses to own the failover logic. The revealed preference is
-clear: people want a better *configuration UX* around mwan3, not another
-daemon. wansentry is that, and nothing more.
+Several projects have answered that by reimplementing failover from scratch,
+starting around 2010: `simplefailover`, `Adze1502/mwan`,
+`GTANAdam/openwrt-wan-failover-script`, `belliash/wanmonitor` and others. Most
+are now unmaintained, and the one adjacent tool with real traction,
+`br101/pingcheck`, does detection only and deliberately leaves failover to
+something else. Dates and current status for each are tabulated in
+[docs/DESIGN.md](docs/DESIGN.md) section 2, so you can check that reading
+rather than take it on trust.
+
+The conclusion wansentry draws from that history is that the gap worth filling
+is a simpler *configuration* path onto mwan3, not another failover mechanism.
+That is a judgement, not a measurement, and it is the premise the whole
+package rests on.
 
 ## How it compares
 
 | | `luci-app-mwan3` | `luci-app-wansentry` |
 |---|---|---|
 | Scope | Every mwan3 feature: load balancing, weights, arbitrary policies and rules | Failover only: one primary, one backup |
-| Screens for a working setup | 5 configuration tabs (+2 more you can ignore, +4 status) | 1 |
+| Screens for a working setup | Several: Interfaces, Members, Policies, Rules, plus status | 1 |
 | Fields | Every mwan3 option, on every section | 9 |
 | Configuration model | You write mwan3 config | wansentry generates it, and shows you exactly what it wrote |
 | Backend | mwan3 | mwan3 (same engine, same package) |
@@ -56,7 +64,10 @@ did not write.
 
 Two `interface` sections (tracking options mapped from the form), two `member`
 sections at metric 1 and 2, one failover `policy`, and one default `rule` — the
-complete minimal mwan3 failover configuration and not one section more. The
+complete minimal mwan3 failover configuration and not one section more.
+The only exception is mwan3's own `globals` section, which wansentry adds
+(with `mmx_mask`) if and only if the system does not already have one; a
+stock mwan3 install ships it, so normally nothing is added. The
 screen renders the exact text before you apply it. Regeneration is idempotent:
 applying an unchanged configuration produces zero uci operations.
 
@@ -68,9 +79,10 @@ applying an unchanged configuration produces zero uci operations.
 - **Recovery is slower than failure.** The recovery threshold defaults higher
   than the failure threshold, because flapping back onto a shaky primary is
   worse than staying on a working backup a little longer.
-- **Conntrack is flushed on every transition by default**, because TCP treats
-  the ICMP unreachables from a dead gateway as a soft error and clients will
-  retransmit into it for minutes otherwise.
+- **Conntrack is flushed on every transition by default.** Established
+  connections carry per-flow NAT and routing-mark state that still points at
+  the uplink that just failed; until those entries expire they keep steering
+  traffic down the dead path, so they are cleared on the switch.
 - **If both uplinks are marked offline, traffic falls through to the kernel
   routing table** rather than being blackholed. A tracking false positive
   should degrade to plain routing, not to a total outage.
@@ -116,6 +128,12 @@ Then **Network → WAN Failover**.
 
 Documented up front rather than left to be discovered.
 
+- **IPv4 only.** wansentry generates no IPv6 failover configuration. On a
+  dual-stack network IPv6 traffic is unaffected by a failover and will continue
+  to use the failed uplink's route until that route goes away. mwan3 itself can
+  express IPv6 rules; wansentry deliberately does not generate them in v1,
+  because IPv6 failover does not reduce to a default-route metric and doing it
+  badly is worse than not doing it.
 - **A live switchover under load has not been tested.** Config generation,
   the ownership model, rollback behaviour and service reconciliation are all
   verified on hardware, but the development bench had only one real uplink, so
