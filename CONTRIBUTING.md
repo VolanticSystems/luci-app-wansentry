@@ -33,8 +33,13 @@ Useful reports include:
 
 ## Building
 
-This repository is a LuCI-style feed: the root `Makefile` includes
-`$(TOPDIR)/feeds/luci/luci.mk`, so it drops into an OpenWrt SDK tree.
+This repository is a single LuCI package with its `Makefile` at the root, the
+same layout upstream `openwrt/luci` uses under `applications/`. It drops into
+an OpenWrt SDK tree's `package/` directory, which is scanned recursively.
+
+It is **not** a feed: a feed is a directory *containing* package directories,
+and adding this repo directly with `src-link` produces an empty feed index.
+The CI workflow stages it into a temporary feed for that reason.
 
     ./scripts/feeds update -a
     ./scripts/feeds install -a
