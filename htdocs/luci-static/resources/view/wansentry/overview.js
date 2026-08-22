@@ -195,8 +195,11 @@ return view.extend({
 		var out = [], s = gen.settings();
 
 		if (!mwan3Loaded) {
-			out.push(ws.note('error', _('mwan3 is not installed'), [
-				E('span', {}, [ _('wansentry generates mwan3 configuration; it does not replace it. Install the mwan3 package and reload this page.') ])
+			/* The mwan3 config could not be loaded. Usually that means the package
+			 * is not installed, but a transient rpcd/uci read failure lands here
+			 * too, so the banner names both rather than asserting the cause. */
+			out.push(ws.note('error', _('mwan3 configuration is not available'), [
+				E('span', {}, [ _('wansentry generates mwan3 configuration; it does not replace it. This usually means the mwan3 package is not installed (install it and reload the page); if it is installed, its configuration could not be read just now, so reload and try again.') ])
 			]));
 
 			return out;
@@ -450,18 +453,29 @@ return view.extend({
 	handleSave: function(ev) {
 		var self = this;
 
-		/* Refuse foreign mwan3 config BEFORE staging anything. map.save() pushes
-		 * /etc/config/wansentry into the pending set server-side; if the
-		 * generator then threw the foreign-config refusal, those wansentry
-		 * changes would linger and could ride out on a later Apply elsewhere in
-		 * LuCI. The foreign check does not depend on the form's pending values,
-		 * so it can run first and keep the two configs all-or-nothing. */
+		/* Everything that can refuse the save runs BEFORE map.save() stages
+		 * anything, so the operation stays all-or-nothing. map.save() pushes
+		 * /etc/config/wansentry into the pending set server-side; if the generator
+		 * then threw, those wansentry changes would linger and could ride out on a
+		 * later Apply from any other LuCI page, committing an enabled failover with
+		 * no mwan3 config behind it. Two doors lead there and both are shut here:
+		 *   - foreign mwan3 config (does not depend on the form's values), and
+		 *   - form validation (identical or empty interfaces), checked against the
+		 *     LIVE widget values via liveSettings() since uci is stale until save. */
 		var state = gen.audit();
 
 		if (state.foreign.length) {
 			ui.addNotification(null, E('p', {}, [
 				_('Refusing to save: /etc/config/mwan3 contains configuration wansentry did not create.')
 			]), 'danger');
+
+			return Promise.resolve(false);
+		}
+
+		var verr = gen.validate(this.liveSettings());
+
+		if (verr) {
+			ui.addNotification(null, E('p', {}, [ verr ]), 'danger');
 
 			return Promise.resolve(false);
 		}
