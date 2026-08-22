@@ -22,31 +22,40 @@ STOP=89
 USE_PROCD=1
 
 reconcile() {
-	local enabled owned
+	local enabled owned managed foreign
 	config_load wansentry
 	config_get_bool enabled main enabled 0
 
 	# Ownership gate, the service-side mirror of the generator's isOwned(). The
 	# generator refuses to touch mwan3 CONFIG it did not write; the service must
-	# refuse just as hard, or the disable branch below stops and disables a user's
-	# hand-configured mwan3 at boot (enabled=0 is the shipped default), before the
-	# settings page has ever been opened. wansentry owns the mwan3 config only
-	# when at least one mwan3 section carries `option wansentry '1'`, which it sets
-	# on every section it generates. Own nothing -> touch nothing, config OR
-	# service. (On a fresh install nothing is generated, so owned is 0 and mwan3
-	# is left entirely alone, exactly as root/etc/config/wansentry promises.)
+	# refuse just as hard, or it stops a user's hand-configured mwan3 at boot
+	# (enabled=0 is the shipped default), before the settings page has ever been
+	# opened.
+	#
+	# owned   = mwan3 sections carrying `option wansentry '1'` (set on every
+	#           section the generator writes).
+	# managed = mwan3 interface/member/policy/rule sections in total.
+	# foreign = managed sections wansentry did not write.
+	#
+	# If ANY foreign managed section exists, hand off entirely: that is a
+	# hand-configured (or still-stock) mwan3 and none of it is ours to touch.
 	owned=$(uci -q show mwan3 | grep -c "\.wansentry='1'")
-	[ "${owned:-0}" -gt 0 ] || return 0
+	managed=$(uci -q show mwan3 | grep -cE "=(interface|member|policy|rule)$")
+	foreign=$(( managed - owned ))
+	[ "$foreign" -gt 0 ] && return 0
 
-	if [ "$enabled" = 1 ]; then
+	if [ "$enabled" = 1 ] && [ "$owned" -gt 0 ]; then
 		# Own the enable symlink; start only if mwan3 is not already up, so an
 		# ordinary settings edit does not restart a running mwan3 (mwan3's own
 		# config reload trigger handles picking up the regenerated rules).
 		/etc/init.d/mwan3 enable 2>/dev/null
 		/etc/init.d/mwan3 running >/dev/null 2>&1 || /etc/init.d/mwan3 start 2>/dev/null
 	else
-		# We own the mwan3 config, so stopping and disabling the service is
-		# turning off our own failover, not a stranger's.
+		# No foreign config to preserve, so reconciling the service down is safe
+		# even when we own nothing. This is what catches a rolled-back FIRST
+		# enable: the reverted config is empty or globals-only (owned=0), but the
+		# apply window left mwan3 enabled and running, and rc.d symlinks are not
+		# covered by UCI rollback. Without acting here that mwan3 would survive.
 		/etc/init.d/mwan3 stop 2>/dev/null
 		/etc/init.d/mwan3 disable 2>/dev/null
 	fi
