@@ -270,8 +270,12 @@ is not left guessing why the screen is read-only.
 Save and Apply, in order:
 
 1. `form.Map.save()` — writes `/etc/config/wansentry` into uci's pending set.
-   (A foreign-config check runs *before* this, so a refusal never leaves
-   wansentry changes staged.)
+   (Both refusal checks run *before* this so the save is all-or-nothing: the
+   foreign-config check, and `validate()` against the live widget values via
+   `liveSettings()`. `validate()` had to be hoisted too because it can fail on
+   a two-click mistake, identical or empty interfaces, and running it after
+   `map.save()` staged would leave `/etc/config/wansentry` half-committed while
+   telling the user the save was refused.)
 2. `generator.write()` — reads those pending values straight back and stages
    the mwan3 sections alongside them. Throws on foreign config or invalid
    input; the error surfaces as a notification and nothing is committed.
