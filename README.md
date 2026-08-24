@@ -148,6 +148,15 @@ Documented up front rather than left to be discovered.
 - **Failover only, by design.** No load balancing, no per-destination policy
   routing. If you need those, use mwan3 directly; wansentry deliberately
   refuses to grow into a second mwan3 UI.
+- **A new uplink will look broken until you add it here.** While failover is
+  armed, mwan3 steers traffic through its own routing tables by firewall mark.
+  An interface that exists but is not named as your primary or backup is not in
+  that model, so traffic bound to it gets marked onto a managed table and fails,
+  even though the link itself is perfectly healthy. Symptom: you add a second
+  WAN, it associates and gets a DHCP lease, and then cannot reach anything.
+  The fix is to select it as the backup on this screen and apply, or to switch
+  failover off while you test the new link. This is mwan3 working as designed,
+  not a fault in the interface.
 - **wansentry only touches what it created.** It will not modify or remove
   mwan3 configuration it did not generate, and the service-side reconciler
   applies the same rule. An existing hand-built mwan3 setup is left alone, and
