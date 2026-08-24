@@ -146,7 +146,21 @@ function dot(state) {
  * returns the entire matching ring buffer every 5 s poll, which on a router
  * where mwan3 has been flapping is the whole log each tick. The ACL grants exec
  * on exactly this command string and nothing else. */
-var EVENT_RE = /^(.+?)\s+\S+\s+(mwan3\S*)\[\d+\]:\s+Interface\s+(\S+)\s+\(([^)]*)\)\s+is\s+(online|offline)/;
+/* The leading fields are anchored by SHAPE -- syslog timestamp, then a
+ * facility.level token -- rather than by a lazy `(.+?)\s+\S+\s+`. The lazy
+ * form let the prefix absorb an entire real log line, so ANY process able to
+ * write to syslog could put a fabricated failover event on this screen simply
+ * by including the text in its own message:
+ *
+ *   ... daemon.warn dropbear[999]: mwan3track[1]: Interface wan (wan) is offline
+ *
+ * matched, and was rendered as a genuine wan outage. Raised by a security
+ * audit. The panel is informational and drives no decision, so this is
+ * integrity of what the operator is shown rather than a route to privilege,
+ * but showing someone a failover that never happened is its own kind of
+ * damage. Verified against real mwan3track lines, including the space-padded
+ * single-digit day busybox emits. */
+var EVENT_RE = /^(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+\S+\.\S+\s+(mwan3\S*)\[\d+\]:\s+Interface\s+(\S+)\s+\(([^)]*)\)\s+is\s+(online|offline)/;
 
 function events(limit) {
 	return fs.exec('/sbin/logread', [ '-l', '200', '-e', 'mwan3' ]).then(function(res) {

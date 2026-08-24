@@ -341,6 +341,68 @@ zero there, the reconciler can safely stop and disable mwan3 in that case while
 still leaving a genuinely foreign mwan3 running untouched. Both halves are
 verified on hardware.
 
+## Security audit, 2026-08-25
+
+A carriers-only panel was asked for a security review specifically, with a
+stated threat model, after two correctness rounds. Three findings, all confirmed
+on hardware, all fixed. Recorded here because the first is the worst defect this
+package has had.
+
+**1. The root-side reconciler treated an unreadable mwan3 as an empty one, and
+stopped and disabled it.** `uci -q show mwan3` prints nothing both when the
+config is genuinely empty and when it cannot be parsed at all, and the gate is
+arithmetic over that output: `owned=0 managed=0 foreign=0` takes the
+stop-and-disable branch. Measured on OpenWrt 25.12.5:
+
+| state | `uci -q show mwan3` | rc | old behaviour |
+|---|---|---|---|
+| valid, populated | 22 lines | 0 | correct |
+| valid, empty | 0 lines | 0 | stop + disable (intended) |
+| parse error | 0 lines | **1** | **stop + disable (wrong)** |
+| file absent | 0 lines | **1** | **stop + disable (wrong)** |
+
+Reproduced: a hand-configured mwan3 carrying no wansentry marker anywhere,
+running with both rc.d symlinks present, was stopped and its start symlink
+removed after a single unbalanced quote was appended to `/etc/config/mwan3`.
+That is this package's one promise, broken by the half of it that runs as root.
+It is also persistent, because repairing the file does not restore the symlink,
+and it was silent, because every service call is `2>/dev/null`. Anyone able to
+write that file without being root could trigger it, which turns a recoverable
+corruption into a lasting one.
+
+Fixed by reading the config once and keeping uci's exit status: a non-zero read
+means unknown, and unknown is not permission, so the reconciler returns having
+touched nothing and logs why. The genuinely-empty case still reaches the disable
+branch, so the rolled-back-first-enable path below is unaffected. Both halves
+re-tested, plus both legitimate paths as regressions.
+
+**2. The ACL granted read of the whole `network` package.** It was used for one
+thing: filtering dhcpv6 interfaces out of the dropdown by reading `proto`. But
+`/etc/config/network` also holds PPPoE and 802.1x credentials and wireguard
+private keys, so an administrator who restricted a user to failover settings had
+also handed them every upstream secret on the router.
+
+Removed. The filter now uses `n.getProtocol()` from LuCI's network model.
+Verified sufficient rather than assumed: `enumerateNetworks()` falls back to the
+netifd interface dump for anything uci did not supply, and on hardware all six
+configured interfaces appear there including the ones that are down, with
+`wan6` carrying `proto "dhcpv6"` -- exactly the case the filter exists for.
+
+**3. The log-event parser could be spoofed.** `EVENT_RE` began `^(.+?)\s+\S+\s+`,
+and a lazy prefix will absorb an entire real log line, so any process able to
+write to syslog could put a fabricated failover event on the screen by including
+the text in its own message. Verified:
+`... daemon.warn dropbear[999]: mwan3track[1]: Interface wan (wan) is offline`
+matched and rendered as a genuine outage. The prefix is now anchored by shape,
+timestamp then facility.level. The panel drives no decision, so this is the
+integrity of what an operator is shown rather than a route to privilege.
+
+**What the audit did NOT find, which is also a result.** No command injection,
+no unquoted expansion reaching a shell, no `eval`, no path traversal, and no
+unauthenticated path. The reconciler parses attacker-influenced config using
+only `grep`, `sed` and arithmetic, and one juror said so explicitly. The rpcd
+`file exec` grant was correctly left alone by every juror this round.
+
 **An empty audit is not permission; an unreadable mwan3 is unknown, not clean.**
 `audit()` classifies what `uci.sections('mwan3')` returns, and that is `[]` both
 when mwan3 holds nothing foreign and when the package never loaded --
