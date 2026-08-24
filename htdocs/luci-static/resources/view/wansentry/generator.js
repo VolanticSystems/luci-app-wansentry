@@ -133,9 +133,11 @@ function normalize(raw) {
 		return (v == null || v === '') ? def : v;
 	};
 
-	/* Floor of 2: the form's datatype is range(2,3600) and validate() requires
-	 * interval > timeout (min timeout 1), so 1 could never be produced by the
-	 * UI and must not slip in from a hand-edited config either. */
+	/* Floor of 2: the form's datatype is range(2,3600), so 1 could never be
+	 * produced by the UI and must not slip in from a hand-edited config either.
+	 * This floor is also what makes the derived timeout below strictly smaller
+	 * than the interval for every possible input, which is the invariant mwan3
+	 * needs and the reason validate() carries no timeout check. */
 	var interval = clamp(g('interval', '5'), 2, 3600, 5);
 
 	return {
@@ -318,8 +320,13 @@ function validate(s) {
 	if (!s.track_ip.length)
 		return _('At least one health-check host is required.');
 
-	if (parseInt(s.timeout, 10) >= parseInt(s.interval, 10))
-		return _('The check interval must be at least two seconds.');
+	/* No timeout-vs-interval guard here. normalize() derives timeout as
+	 * clamp(min(4, interval - 1), 1, 10, 2) from an interval already clamped to
+	 * a minimum of 2, so timeout is strictly less than interval for every
+	 * reachable input, including a hand-edited config and a non-numeric one.
+	 * The check that used to sit here could not fail, and a check that cannot
+	 * fail is worse than no check because it reads as coverage. The invariant
+	 * is enforced where it is actually established, in normalize(). */
 
 	return null;
 }

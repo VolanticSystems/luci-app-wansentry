@@ -146,6 +146,13 @@ return view.extend({
 		return Promise.all([
 			uci.load('wansentry'),
 			L.resolveDefault(uci.load('mwan3'), null),
+			/* Loaded explicitly because the interface filter below reads
+			 * `proto` straight out of uci. network.getNetworks() happens to
+			 * populate the same cache today, but that is a side effect of
+			 * another module's initialisation, and a filter that silently
+			 * matches nothing when it is absent would put dhcpv6-only
+			 * interfaces back in the dropdown without any error. */
+			uci.load('network'),
 			network.getNetworks(),
 			L.resolveDefault(ws.rpc.status(), null),
 			ws.events(8)
@@ -277,9 +284,10 @@ return view.extend({
 	render: function(data) {
 		var self = this,
 		    mwan3Loaded = (data[1] !== null),
-		    networks = data[2],
-		    status = data[3],
-		    events = data[4];
+		    /* data[2] is uci.load('network'), consumed by the filter below. */
+		    networks = data[3],
+		    status = data[4],
+		    events = data[5];
 
 		ws.injectCSS();
 
