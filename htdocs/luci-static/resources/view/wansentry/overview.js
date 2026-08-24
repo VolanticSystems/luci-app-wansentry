@@ -146,13 +146,6 @@ return view.extend({
 		return Promise.all([
 			uci.load('wansentry'),
 			L.resolveDefault(uci.load('mwan3'), null),
-			/* Loaded explicitly because the interface filter below reads
-			 * `proto` straight out of uci. network.getNetworks() happens to
-			 * populate the same cache today, but that is a side effect of
-			 * another module's initialisation, and a filter that silently
-			 * matches nothing when it is absent would put dhcpv6-only
-			 * interfaces back in the dropdown without any error. */
-			uci.load('network'),
 			network.getNetworks(),
 			L.resolveDefault(ws.rpc.status(), null),
 			ws.events(8)
@@ -284,10 +277,9 @@ return view.extend({
 	render: function(data) {
 		var self = this,
 		    mwan3Loaded = (data[1] !== null),
-		    /* data[2] is uci.load('network'), consumed by the filter below. */
-		    networks = data[3],
-		    status = data[4],
-		    events = data[5];
+		    networks = data[2],
+		    status = data[3],
+		    events = data[4];
 
 		ws.injectCSS();
 
@@ -311,9 +303,21 @@ return view.extend({
 		 * look like a "wan" interface, so guessing by name would be wrong; but
 		 * a dhcpv6 interface cannot carry the IPv4 policy this app generates,
 		 * and offering it would only produce an uplink that never comes up. */
+		/* getProtocol() rather than uci.get('network', ..., 'proto'). Reading the
+		 * raw config would require granting `uci: network` in the ACL, which is
+		 * the whole file: PPPoE and 802.1x credentials and wireguard private
+		 * keys all live there, and a user an administrator restricted to
+		 * failover settings alone could then read every one of them. A security
+		 * audit raised it and the grant is gone.
+		 *
+		 * This is not merely equivalent, it is sufficient: LuCI's
+		 * enumerateNetworks() falls back to the netifd interface dump for any
+		 * interface uci did not supply, instantiating it with the proto from
+		 * that dump. Verified on hardware -- all six configured interfaces
+		 * appear there, including the ones that are down, and wan6 carries
+		 * proto "dhcpv6", which is precisely the case this filter exists for. */
 		var choices = networks.filter(function(n) {
-			return n.getName() !== 'loopback' &&
-			       uci.get('network', n.getName(), 'proto') !== 'dhcpv6';
+			return n.getName() !== 'loopback' && n.getProtocol() !== 'dhcpv6';
 		}).map(function(n) {
 			var dev = n.getDevice();
 

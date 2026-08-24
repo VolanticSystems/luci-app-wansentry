@@ -51,9 +51,40 @@ mwan3_armed() {
 }
 
 reconcile() {
-	local enabled owned managed foreign
+	local enabled owned managed foreign dump rc
 	config_load wansentry
 	config_get_bool enabled main enabled 0
+
+	# Read /etc/config/mwan3 ONCE, and keep uci's exit status, because "there is
+	# nothing here" and "I could not read it" are different facts that require
+	# OPPOSITE actions and both produce empty output.
+	#
+	#   valid config, any content   rc=0
+	#   valid but empty             rc=0, no lines   <- rolled-back first enable
+	#   parse error                 rc=1, no lines   <- someone else's config!
+	#   file absent                 rc=1, no lines
+	#
+	# (measured on OpenWrt 25.12.5, 2026-08-25.)
+	#
+	# Until then this function counted an unreadable config as an empty one and
+	# fell through to the stop/disable branch below. A security audit found it
+	# and it reproduced on hardware: a hand-configured mwan3 carrying no
+	# wansentry marker at all, running with its boot symlink in place, was
+	# stopped and disabled after a single unbalanced quote was appended to
+	# /etc/config/mwan3. That is the package's one promise broken by the half of
+	# it that runs as root, and it converts a recoverable config corruption into
+	# a persistent one, because repairing the file does not restore the rc.d
+	# symlink. Anyone able to write that file without being root could trigger it.
+	#
+	# Unknown is not permission. Touch nothing, and say so, because every service
+	# call below is silenced and an operator would otherwise have no trace.
+	dump=$(uci -q show mwan3 2>/dev/null)
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		logger -t wansentry -p daemon.warn \
+			"/etc/config/mwan3 is missing or unreadable; leaving the mwan3 service untouched"
+		return 0
+	fi
 
 	# Ownership gate, the service-side mirror of the generator's isOwned(). The
 	# generator refuses to touch mwan3 CONFIG it did not write; the service must
@@ -81,10 +112,10 @@ reconcile() {
 	# the one thing this package promises never to do. `owned` ignored the
 	# wansentry_ namespace that isOwned() accepts, so a prefixed section without
 	# the option counted as foreign here and as ours in the browser.
-	owned=$(uci -q show mwan3 \
+	owned=$(printf '%s\n' "$dump" \
 		| sed -n "s/^mwan3\.\([^.]*\)\.wansentry='1'$/\1/p; s/^mwan3\.\(wansentry_[^.]*\)=.*/\1/p" \
 		| sort -u | grep -c .)
-	managed=$(uci -q show mwan3 | grep -E "^mwan3\.[^.]+=" | grep -vc "=globals$")
+	managed=$(printf '%s\n' "$dump" | grep -E "^mwan3\.[^.]+=" | grep -vc "=globals$")
 	foreign=$(( managed - owned ))
 	[ "$foreign" -gt 0 ] && return 0
 

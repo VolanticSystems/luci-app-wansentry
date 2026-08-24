@@ -12,7 +12,7 @@
 				"network.interface": [ "dump" ],
 				"uci": [ "changes", "get" ]
 			},
-			"uci": [ "mwan3", "network", "wansentry" ]
+			"uci": [ "mwan3", "wansentry" ]
 		},
 		"write": {
 			"ubus": {
