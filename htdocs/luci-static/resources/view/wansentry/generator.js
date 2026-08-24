@@ -142,7 +142,14 @@ function normalize(raw) {
 		enabled:  g('enabled', '0') === '1',
 		primary:  g('primary', ''),
 		backup:   g('backup', ''),
-		track_ip: L.toArray(raw.track_ip),
+		/* Trim and drop empties. L.toArray([ '' ]) has length 1, so an empty
+		 * DynamicList row, or a `list track_ip ''` in a hand-edited config,
+		 * used to satisfy validate()'s `!s.track_ip.length` check and then
+		 * generate `list track_ip ''` into /etc/config/mwan3 -- an empty probe
+		 * host that mwan3 can never reach. */
+		track_ip: L.toArray(raw.track_ip)
+		            .map(function(v) { return String(v == null ? '' : v).trim(); })
+		            .filter(function(v) { return v.length > 0; }),
 		interval: interval,
 		down:     clamp(g('down', '3'), 1, 100, 3),
 		up:       clamp(g('up', '6'), 1, 100, 6),

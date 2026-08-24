@@ -27,13 +27,26 @@ USE_PROCD=1
 #
 # `/etc/init.d/mwan3 running` is not sufficient on its own: mwan3 can report
 # running while carrying no policy at all, in which case nothing is being
-# steered and a failover would never happen. `mwan3 policies` prints one
-# "name (N%)" line per member of each installed policy, read back out of the
-# live firewall chains, so the absence of any percentage means no policy is
-# installed and this router is not actually armed.
+# steered and a failover would never happen. `mwan3 policies` reads the live
+# firewall chains back, and prints one indented line per policy entry.
+#
+# Match ANY indented entry, not a percentage. This used to grep for
+# '([0-9]+%)', which is printed only for a member that is currently ONLINE, and
+# that is the inverse of the bug this function was written to catch. Measured
+# on OpenWrt 25.12.5 / mwan3 2.12.0, all three states distinguished:
+#
+#   member online        " wan (100%)"   policy installed, armed
+#   all uplinks offline  " default"      policy installed, armed, last_resort
+#   no policy at all     (no indented line at all)      NOT armed
+#
+# The middle state is the whole point of `last_resort default`, and the old
+# grep called it unarmed. reconcile() would then restart mwan3 on every reload
+# trigger during a dual outage, and at boot whenever the uplinks were not up
+# yet (START=21 runs before a WAN usually comes up) -- breaking this file's own
+# promise that an ordinary settings edit never restarts an already-armed mwan3.
 mwan3_armed() {
 	/etc/init.d/mwan3 running >/dev/null 2>&1 || return 1
-	mwan3 policies 2>/dev/null | grep -qE '\([0-9]+%\)' || return 1
+	mwan3 policies 2>/dev/null | grep -qE '^[[:space:]]+[^[:space:]]' || return 1
 	return 0
 }
 
@@ -48,15 +61,30 @@ reconcile() {
 	# (enabled=0 is the shipped default), before the settings page has ever been
 	# opened.
 	#
-	# owned   = mwan3 sections carrying `option wansentry '1'` (set on every
-	#           section the generator writes).
-	# managed = mwan3 interface/member/policy/rule sections in total.
-	# foreign = managed sections wansentry did not write.
+	# owned   = sections the generator's isOwned() would claim: carrying
+	#           `option wansentry '1'` OR living in the wansentry_ namespace.
+	#           Counted by NAME and de-duplicated, because every generated
+	#           section matches both tests and must not count twice.
+	# managed = every mwan3 section except `globals`, which is mwan3's own
+	#           infrastructure and belongs to neither side.
+	# foreign = anything managed that wansentry did not write.
 	#
-	# If ANY foreign managed section exists, hand off entirely: that is a
+	# If ANY foreign section exists, hand off entirely: that is a
 	# hand-configured (or still-stock) mwan3 and none of it is ours to touch.
-	owned=$(uci -q show mwan3 | grep -c "\.wansentry='1'")
-	managed=$(uci -q show mwan3 | grep -cE "=(interface|member|policy|rule)$")
+	#
+	# Both counts previously disagreed with the generator, in the dangerous
+	# direction. `managed` matched only interface/member/policy/rule, so an
+	# mwan3 carrying a section of any OTHER type -- which audit() classifies as
+	# foreign and refuses to write to -- was invisible here: measured
+	# owned=0 managed=0 foreign=0 on a config holding `config notify`, which
+	# takes the branch below and STOPS AND DISABLES a stranger's mwan3. That is
+	# the one thing this package promises never to do. `owned` ignored the
+	# wansentry_ namespace that isOwned() accepts, so a prefixed section without
+	# the option counted as foreign here and as ours in the browser.
+	owned=$(uci -q show mwan3 \
+		| sed -n "s/^mwan3\.\([^.]*\)\.wansentry='1'$/\1/p; s/^mwan3\.\(wansentry_[^.]*\)=.*/\1/p" \
+		| sort -u | grep -c .)
+	managed=$(uci -q show mwan3 | grep -E "^mwan3\.[^.]+=" | grep -vc "=globals$")
 	foreign=$(( managed - owned ))
 	[ "$foreign" -gt 0 ] && return 0
 

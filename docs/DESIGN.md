@@ -309,10 +309,27 @@ of the generator's `isOwned()`: the generator refuses to touch mwan3 *config* it
 did not write, and the service must refuse just as hard, or it would stop a
 user's hand-built mwan3 at boot, since `enabled=0` is the shipped default and
 that is the state before the settings page has ever been opened. It therefore
-counts `owned` (mwan3 sections carrying `option wansentry '1'`) against
-`managed` (all mwan3 `interface`/`member`/`policy`/`rule` sections) and hands
-off entirely, touching nothing, the moment any *foreign* managed section
-exists.
+counts `owned` (sections `isOwned()` would claim: carrying
+`option wansentry '1'` **or** living in the `wansentry_` namespace, counted by
+name and de-duplicated) against `managed` (every mwan3 section except
+`globals`) and hands off entirely, touching nothing, the moment any *foreign*
+section exists.
+
+**Both counts were wrong until 2026-08-25, in the dangerous direction, and an
+adversarial panel found it.** `managed` matched only
+`interface`/`member`/`policy`/`rule`. A section of any other type is classified
+foreign by `audit()`, which makes the generator refuse to write at all -- but it
+was invisible to the reconciler. Measured on hardware against an `/etc/config/mwan3`
+holding `config globals` and `config notify`: `owned=0 managed=0 foreign=0`, so
+the gate fell through to the disable branch and **stopped and disabled a
+stranger's mwan3**, which is the one thing this package promises never to do.
+The frontend refused to save the same config while the service tore it down.
+
+`owned` had the mirror-image gap: it counted only the option, while `isOwned()`
+also accepts the `wansentry_` name prefix, so a prefixed section without the
+option read as ours in the browser and as foreign on the router. Counting names
+and de-duplicating fixes both without double-counting the generated sections,
+which match on both tests. Verified across four configurations on hardware.
 
 The distinction matters in one specific case that an "owns nothing, do nothing"
 gate gets wrong. A **first** enable that is rolled back leaves the config
@@ -323,6 +340,27 @@ mwan3 with an empty configuration. Because `foreign` is separately known to be
 zero there, the reconciler can safely stop and disable mwan3 in that case while
 still leaving a genuinely foreign mwan3 running untouched. Both halves are
 verified on hardware.
+
+**Arming is decided by whether a policy is installed, not by whether traffic is
+flowing.** `mwan3_armed()` exists because `/etc/init.d/mwan3 running` reports
+success on an mwan3 carrying no policy at all, which is silent non-failover. It
+reads `mwan3 policies`, which prints the live firewall chains back. It matches
+any indented policy entry; it used to match `([0-9]+%)`, and **that was the
+inverse of the bug it was written to catch**, found by the same panel and
+measured on OpenWrt 25.12.5 with mwan3 2.12.0:
+
+| state | `mwan3 policies` prints | armed? | old check | new check |
+|---|---|---|---|---|
+| a member online | ` wan (100%)` | yes | TRUE | TRUE |
+| every uplink offline | ` default` | yes, via `last_resort` | **FALSE** | TRUE |
+| no policy installed | nothing indented | no | FALSE | FALSE |
+
+The middle row is `last_resort 'default'` doing exactly its job, and the old
+check called it unarmed. `reconcile()` would then restart mwan3 on every reload
+trigger during a dual outage, and at boot whenever the uplinks were not up yet,
+since `START=21` runs before a WAN normally comes up. That breaks the promise
+made two paragraphs above, that an ordinary settings edit never restarts an
+already-armed mwan3.
 
 **Safety net.** Even if the reconciler never runs, wansentry disabled is inert:
 the generated interfaces carry `enabled '0'`, so the policy has no members, so
