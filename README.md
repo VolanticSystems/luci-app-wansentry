@@ -8,12 +8,15 @@ what it generated. Pick a primary uplink, pick a backup, name two health-check
 hosts, apply. Provided both uplinks already exist as configured network
 interfaces, nothing else has to be visited.
 
-> Status: **working, published as a demonstration project.** Developed and
-> tested on real hardware, including config generation, ownership refusal,
-> rollback and service reconciliation. **Not** yet tested with a genuinely live
-> second uplink: an actual switchover under load is unverified, so treat this as
-> a reference implementation rather than something to put in front of an uplink
-> you depend on. See *Known limitations*.
+> Status: **working, and failover is verified on hardware.** A live switchover
+> under load has been measured on two independent uplink types: a wired primary
+> failing over to cellular, and the same primary failing over to a second
+> broadband line on separate Wi-Fi. Both switched in 13-14 s against a 15 s
+> detection threshold and failed back in 31 s against a 30 s recovery
+> threshold, confirmed by interface byte counters rather than status output.
+> Config generation, the ownership refusal, rollback and service reconciliation
+> are verified too. See *Known limitations* for what remains, chiefly that this
+> is IPv4 only and does not solve DNS.
 
 ## Why
 
@@ -124,6 +127,28 @@ by an OpenWrt repository key. On releases still using opkg, use
 
 Then **Network → WAN Failover**.
 
+## Uninstalling
+
+Removing the package **does not tear down failover.** The generated mwan3
+configuration stays in `/etc/config/mwan3` and mwan3 keeps running it, so the
+router carries on failing over exactly as before. That is deliberate: removing
+a configuration front end should not drop your connections or silently change
+how the router routes.
+
+If you want the failover configuration gone as well, remove the sections
+wansentry created before or after removing the package. They are all marked, so
+they are easy to find:
+
+    uci show mwan3 | grep "wansentry='1'"
+
+    for s in $(uci show mwan3 | grep "wansentry='1'" | cut -d. -f2 | cut -d= -f1 | sort -u); do
+        uci delete mwan3.$s
+    done
+    uci commit mwan3
+    /etc/init.d/mwan3 stop && /etc/init.d/mwan3 disable
+
+Nothing else wansentry installed survives removal.
+
 ## Known limitations
 
 Documented up front rather than left to be discovered.
@@ -134,12 +159,17 @@ Documented up front rather than left to be discovered.
   express IPv6 rules; wansentry deliberately does not generate them in v1,
   because IPv6 failover does not reduce to a default-route metric and doing it
   badly is worse than not doing it.
-- **A live switchover under load has not been tested.** Config generation,
-  the ownership model, rollback behaviour and service reconciliation are all
-  verified on hardware, but the development bench had only one real uplink, so
-  the end-to-end event this package exists to handle (a primary WAN failing
-  while traffic is flowing) is unverified. This is the reason for the status
-  note above.
+- **Detection is not instant, and that is deliberate.** An uplink is declared
+  down only after `interval x failure threshold` seconds, five and three by
+  default, so expect roughly 15 s before traffic moves, and roughly 30 s before
+  it moves back (`interval x recovery threshold`). Measured on hardware at 13-14 s
+  and 31 s. Shortening the interval detects faster and flaps more; the defaults
+  favour not flapping.
+- **Existing connections are dropped on a switchover** when conntrack flushing
+  is on, which is the default. That is the point: entries pinned to the dead
+  uplink would otherwise keep steering traffic down it. But mwan3's flush is
+  global rather than per-uplink, so connections on the healthy uplink are
+  dropped too.
 - **DNS is not solved, and cannot be solved here.** dnsmasq merges upstream
   resolvers from every interface that is up and does not consult failover
   state, so name resolution can still be attempted through a dead uplink.
