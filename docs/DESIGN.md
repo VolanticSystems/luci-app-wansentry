@@ -341,6 +341,20 @@ zero there, the reconciler can safely stop and disable mwan3 in that case while
 still leaving a genuinely foreign mwan3 running untouched. Both halves are
 verified on hardware.
 
+**An empty audit is not permission; an unreadable mwan3 is unknown, not clean.**
+`audit()` classifies what `uci.sections('mwan3')` returns, and that is `[]` both
+when mwan3 holds nothing foreign and when the package never loaded --
+`L.resolveDefault()` flattens a missing package, an ACL gap, a transient rpcd
+failure and an unparseable `/etc/config/mwan3` into the same `null`. The last is
+the dangerous one: it is exactly when a foreign hand-built config *does* exist
+and the ownership check cannot see it. The screen has always blocked this
+(`blocked = !mwan3Loaded || foreign.length`, driving `m.readonly`), but that is
+a rendering decision, and until 2026-08-25 `handleSave()` itself consulted only
+`foreign.length`. The promise is now enforced in the save path, where it
+belongs, rather than depending on a variable in another function. Raised by a
+carrier juror, which was also careful to flag that it could not tell whether the
+button was reachable under `m.readonly`; the fix is defence in depth either way.
+
 **Arming is decided by whether a policy is installed, not by whether traffic is
 flowing.** `mwan3_armed()` exists because `/etc/init.d/mwan3 running` reports
 success on an mwan3 carrying no policy at all, which is silent non-failover. It

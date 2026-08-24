@@ -286,6 +286,17 @@ return view.extend({
 		var audit = gen.audit(),
 		    blocked = (!mwan3Loaded || audit.foreign.length > 0);
 
+		/* Remembered for handleSave(). audit() cannot tell "mwan3 holds nothing
+		 * foreign" from "mwan3 never loaded": uci.sections() returns [] for
+		 * both, and L.resolveDefault() flattens a missing package, an ACL gap, a
+		 * transient rpcd failure and an unparseable /etc/config/mwan3 into the
+		 * same null. The last of those is the dangerous one, because that is
+		 * precisely when a foreign hand-built config DOES exist and the
+		 * ownership check cannot see it. m.readonly below already blocks the
+		 * form, but that is a rendering decision; the promise not to touch a
+		 * stranger's mwan3 is enforced in the save path itself. */
+		self.mwan3Loaded = mwan3Loaded;
+
 		/* Everything except loopback and the IPv6-only companion interfaces is
 		 * offered. An LTE stick, a phone tethered over USB and a neighbour's
 		 * wifi joined as a station are all legitimate backups and none of them
@@ -462,6 +473,16 @@ return view.extend({
 		 *   - foreign mwan3 config (does not depend on the form's values), and
 		 *   - form validation (identical or empty interfaces), checked against the
 		 *     LIVE widget values via liveSettings() since uci is stale until save. */
+		/* An empty audit is only meaningful if mwan3 actually loaded. See
+		 * render(): unset means unknown, and unknown is not permission. */
+		if (!self.mwan3Loaded) {
+			ui.addNotification(null, E('p', {}, [
+				_('Refusing to save: /etc/config/mwan3 could not be read, so wansentry cannot tell whether it would be overwriting configuration it did not create.')
+			]), 'danger');
+
+			return Promise.resolve(false);
+		}
+
 		var state = gen.audit();
 
 		if (state.foreign.length) {
