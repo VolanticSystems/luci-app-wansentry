@@ -141,8 +141,12 @@ armed() {
 	)
 }
 
-# Count mwan3's rc.d entries with a glob rather than `ls | grep`, which
-# shellcheck rightly objects to and which would miscount on odd filenames.
+# Count mwan3's rc.d entries with a glob rather than `ls | grep`, which SC2010
+# rightly objects to and which would miscount on odd filenames.
+#
+# Mind the wrapping here: a comment line that BEGINS with "# shellcheck" is
+# parsed as a directive, so wrapping this sentence so the tool's name landed at
+# the start of the second line produced SC1073/SC1072 and failed the job.
 symlinks() {
 	local n=0 f
 	for f in /etc/rc.d/*mwan3; do
