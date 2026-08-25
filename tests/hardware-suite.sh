@@ -125,16 +125,20 @@ restarted() {
 	grep -q ' restart$' /tmp/mwan3-calls.log && echo YES || echo NO
 }
 
-# Ask the SHIPPED mwan3_armed(), by sourcing the installed init script in a
-# subshell with rc.common's entry points stubbed out. Reimplementing the grep
-# here is what made the arming checks pass against the broken v1.0.1 version.
+# Ask the SHIPPED mwan3_armed() by sourcing the installed init script in a
+# subshell. Reimplementing the grep here is what made the arming checks pass
+# against the broken v1.0.1 version, so this must keep calling the real thing.
+#
+# Sourcing is safe and needs no stubbing: the file's `#!/bin/sh /etc/rc.common`
+# is the mechanism by which rc.common sources IT when executed, and is an
+# ordinary comment when we source it ourselves. Nothing runs at top level except
+# the variable assignments and the function definitions.
+#
+# An earlier version pre-set START/STOP/USE_PROCD here "so sourcing cannot start
+# anything". They were overwritten by the script's own values on the next line
+# and did nothing, while tripping SC2034 twice.
 armed() {
 	(
-		# These three look unused and are not: /etc/rc.common reads them out of
-		# the sourced file. Stubbed so sourcing the init script cannot start
-		# anything, only define its functions.
-		# shellcheck disable=SC2034
-		START=0; STOP=0; USE_PROCD=0
 		# shellcheck disable=SC1091
 		. /etc/init.d/wansentry 2>/dev/null
 		mwan3_armed >/dev/null 2>&1 && echo TRUE || echo FALSE
