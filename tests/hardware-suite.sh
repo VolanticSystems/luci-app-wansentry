@@ -52,6 +52,7 @@ restore() {
 	uci commit wansentry 2>/dev/null
 	/etc/init.d/mwan3 restart >/dev/null 2>&1
 	rm -rf "$BK" /tmp/mwan3-calls.log
+	rm -f /etc/rc.d/*mwan3.real*
 	printf '\nrestored /etc/config/mwan3 and /etc/config/wansentry\n'
 }
 trap 'restore; exit $FAIL' INT TERM EXIT
@@ -129,6 +130,10 @@ restarted() {
 # here is what made the arming checks pass against the broken v1.0.1 version.
 armed() {
 	(
+		# These three look unused and are not: /etc/rc.common reads them out of
+		# the sourced file. Stubbed so sourcing the init script cannot start
+		# anything, only define its functions.
+		# shellcheck disable=SC2034
 		START=0; STOP=0; USE_PROCD=0
 		# shellcheck disable=SC1091
 		. /etc/init.d/wansentry 2>/dev/null
@@ -136,7 +141,15 @@ armed() {
 	)
 }
 
-symlinks() { ls /etc/rc.d/ 2>/dev/null | grep -c mwan3; }
+# Count mwan3's rc.d entries with a glob rather than `ls | grep`, which
+# shellcheck rightly objects to and which would miscount on odd filenames.
+symlinks() {
+	local n=0 f
+	for f in /etc/rc.d/*mwan3; do
+		[ -e "$f" ] && n=$((n + 1))
+	done
+	echo "$n"
+}
 running()  { /etc/init.d/mwan3 running >/dev/null 2>&1 && echo YES || echo NO; }
 
 # Replace /etc/init.d/mwan3 with a logging shim so a test can assert on what the
@@ -158,6 +171,11 @@ shim_off() {
 	[ -f /etc/init.d/mwan3.real ] || return 0
 	mv -f /etc/init.d/mwan3.real /etc/init.d/mwan3
 	chmod +x /etc/init.d/mwan3
+	# Any `mwan3.real enable` during the run writes /etc/rc.d/S19mwan3.real.
+	# Left behind it inflates every symlink count by one, and an earlier version
+	# of this suite had its expected values calibrated against exactly that
+	# contamination -- so the numbers looked right and were measuring junk.
+	rm -f /etc/rc.d/*mwan3.real*
 }
 
 # ---------------------------------------------------------------- ownership
@@ -170,15 +188,16 @@ test_ownership() {
 	# state: it is what a router looks like after installing this package and
 	# before ever opening the settings page. If the gate is wrong here, the
 	# package tears down a stranger's mwan3 on a config it has never managed.
+	# Takes no arguments: the unknown-section-type case builds its own fixture
+	# below, because that one must contain ONLY the unknown type.
 	arm_foreign_mwan3() {   # a running, hand-configured mwan3 with no marker
 		wipe_mwan3
 		uci set mwan3.wan=interface; uci set mwan3.wan.enabled=1
 		uci set mwan3.hand_m=member; uci set mwan3.hand_m.interface=wan
 		uci set mwan3.hand_p=policy; uci add_list mwan3.hand_p.use_member=hand_m
-		[ -n "${1:-}" ] && uci set "mwan3.$1=$2"
 		uci commit mwan3
 		uci set wansentry.main.enabled=0; uci commit wansentry
-		/etc/init.d/mwan3.real enable >/dev/null 2>&1
+		/etc/init.d/mwan3 enable >/dev/null 2>&1
 		/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	}
 
@@ -193,7 +212,7 @@ test_ownership() {
 	uci set mwan3.mynotify=notify; uci set mwan3.mynotify.enabled=1
 	uci commit mwan3
 	uci set wansentry.main.enabled=0; uci commit wansentry
-	/etc/init.d/mwan3.real enable >/dev/null 2>&1
+	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	reconcile >/dev/null
 	chk "an UNKNOWN section type is foreign: mwan3 left alone" "NO" "$(tore_down)"
@@ -207,14 +226,14 @@ test_ownership() {
 	# has become "never touch anything", which is a different bug.
 	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
 	uci set wansentry.main.enabled=0; uci commit wansentry
-	/etc/init.d/mwan3.real enable >/dev/null 2>&1
+	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	reconcile >/dev/null
 	chk "config wansentry OWNS, with enabled=0: mwan3 IS torn down" "YES" "$(tore_down)"
 
 	wipe_mwan3; uci commit mwan3
 	uci set wansentry.main.enabled=0; uci commit wansentry
-	/etc/init.d/mwan3.real enable >/dev/null 2>&1
+	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	reconcile >/dev/null
 	chk "globals only (rolled-back first enable): mwan3 IS torn down" "YES" "$(tore_down)"
@@ -312,7 +331,7 @@ test_security() {
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 18
 	chk "fixture: a foreign mwan3 is running with its boot symlink" \
-	    "2 YES" "$(symlinks) $(running)"
+	    "1 YES" "$(symlinks) $(running)"
 
 	echo "option broken 'unterminated" >> /etc/config/mwan3
 	uci -q show mwan3 >/dev/null 2>&1 \
@@ -320,7 +339,7 @@ test_security() {
 	  || ok "fixture: uci cannot read the corrupted config"
 	/etc/init.d/wansentry start >/dev/null 2>&1; sleep 4
 	chk "a parse error must NOT stop or disable a foreign mwan3" \
-	    "2 YES" "$(symlinks) $(running)"
+	    "1 YES" "$(symlinks) $(running)"
 
 	cp "$BK/hand" /etc/config/mwan3
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
@@ -330,7 +349,7 @@ test_security() {
 	  || ok "fixture: uci cannot read the absent config"
 	/etc/init.d/wansentry start >/dev/null 2>&1; sleep 4
 	chk "a missing config must NOT stop or disable a foreign mwan3" \
-	    "2 YES" "$(symlinks) $(running)"
+	    "1 YES" "$(symlinks) $(running)"
 	mv "$BK/away" /etc/config/mwan3
 
 	head2 "SECURITY: the legitimate disable path still works"
@@ -343,7 +362,7 @@ test_security() {
 	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 15
 	/etc/init.d/wansentry start >/dev/null 2>&1; sleep 5
 	chk "a rolled-back first enable IS reconciled down" \
-	    "1 NO" "$(symlinks) $(running)"
+	    "0 NO" "$(symlinks) $(running)"
 
 	head2 "SECURITY: the ACL grants no more than the package uses"
 	A=/usr/share/rpcd/acl.d/luci-app-wansentry.json
