@@ -87,22 +87,53 @@ own_policy() {
 	uci set mwan3.wansentry_fail.wansentry=1
 }
 
-# The reconciler's own ownership arithmetic, mirrored so the suite can assert on
-# it directly rather than only on its side effects.
-gate() {
-	local dump rc owned managed
-	dump=$(uci -q show mwan3 2>/dev/null); rc=$?
-	[ "$rc" -ne 0 ] && { echo "UNREADABLE"; return; }
-	owned=$(printf '%s\n' "$dump" \
-		| sed -n "s/^mwan3\.\([^.]*\)\.wansentry='1'$/\1/p; s/^mwan3\.\(wansentry_[^.]*\)=.*/\1/p" \
-		| sort -u | grep -c .)
-	managed=$(printf '%s\n' "$dump" | grep -E "^mwan3\.[^.]+=" | grep -vc "=globals$")
-	echo "owned=$owned managed=$managed foreign=$(( managed - owned ))"
+# Run the REAL reconciler and report what it did to the mwan3 service.
+#
+# An earlier version of this suite reimplemented the reconciler's ownership
+# arithmetic here and asserted on the copy. That was worthless: every one of
+# those checks passed against the known-broken v1.0.1 reconciler, because the
+# copy was correct even when the shipped code was not. A test that cannot fail
+# on the defect it describes is decorative, and five of them were.
+#
+# Everything below now drives /etc/init.d/wansentry and observes the service.
+#
+# `reconcile` echoes: "<ran|DIDNOTRUN> <calls>" where calls is the shim log.
+reconcile() {
+	: > /tmp/mwan3-calls.log
+	/etc/init.d/wansentry reload >/dev/null 2>&1
+	sleep 6
+	if [ "$(grep -c . /tmp/mwan3-calls.log)" -eq 0 ]; then
+		# The reconciler touching nothing is a legitimate outcome (the ownership
+		# gate hands off), so this is reported rather than failed. What must
+		# never happen is a test reading an empty log as proof of good
+		# behaviour, which is how the restart-discipline checks silently
+		# stopped testing anything.
+		echo "nocalls"
+	else
+		tr '
+' ' ' < /tmp/mwan3-calls.log
+	fi
 }
 
+# Did the reconciler stop or disable mwan3 during the last reconcile?
+tore_down() {
+	grep -qE ' (stop|disable)$' /tmp/mwan3-calls.log && echo YES || echo NO
+}
+
+restarted() {
+	grep -q ' restart$' /tmp/mwan3-calls.log && echo YES || echo NO
+}
+
+# Ask the SHIPPED mwan3_armed(), by sourcing the installed init script in a
+# subshell with rc.common's entry points stubbed out. Reimplementing the grep
+# here is what made the arming checks pass against the broken v1.0.1 version.
 armed() {
-	/etc/init.d/mwan3 running >/dev/null 2>&1 || { echo FALSE; return; }
-	mwan3 policies 2>/dev/null | grep -qE '^[[:space:]]+[^[:space:]]' && echo TRUE || echo FALSE
+	(
+		START=0; STOP=0; USE_PROCD=0
+		# shellcheck disable=SC1091
+		. /etc/init.d/wansentry 2>/dev/null
+		mwan3_armed >/dev/null 2>&1 && echo TRUE || echo FALSE
+	)
 }
 
 symlinks() { ls /etc/rc.d/ 2>/dev/null | grep -c mwan3; }
@@ -132,31 +163,63 @@ shim_off() {
 # ---------------------------------------------------------------- ownership
 
 test_ownership() {
-	head2 "OWNERSHIP GATE (generator audit() and the reconciler must agree)"
+	head2 "OWNERSHIP GATE (does the REAL reconciler touch what it must not?)"
+	shim_on
 
-	wipe_mwan3; uci set mwan3.mynotify=notify; uci commit mwan3
-	chk "a foreign section of an UNKNOWN type counts as foreign" \
-	    "owned=0 managed=1 foreign=1" "$(gate)"
+	# Every case runs with enabled=0, the shipped default and the dangerous
+	# state: it is what a router looks like after installing this package and
+	# before ever opening the settings page. If the gate is wrong here, the
+	# package tears down a stranger's mwan3 on a config it has never managed.
+	arm_foreign_mwan3() {   # a running, hand-configured mwan3 with no marker
+		wipe_mwan3
+		uci set mwan3.wan=interface; uci set mwan3.wan.enabled=1
+		uci set mwan3.hand_m=member; uci set mwan3.hand_m.interface=wan
+		uci set mwan3.hand_p=policy; uci add_list mwan3.hand_p.use_member=hand_m
+		[ -n "${1:-}" ] && uci set "mwan3.$1=$2"
+		uci commit mwan3
+		uci set wansentry.main.enabled=0; uci commit wansentry
+		/etc/init.d/mwan3.real enable >/dev/null 2>&1
+		/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
+	}
 
-	wipe_mwan3; uci set mwan3.wan=interface; uci commit mwan3
-	chk "a foreign interface counts as foreign" \
-	    "owned=0 managed=1 foreign=1" "$(gate)"
-
+	# ONLY an unknown type, with no interface/member/policy/rule anywhere. That
+	# is the precise shape of the hole: v1.0.1 counted `managed` as those four
+	# types alone, so this config measured owned=0 managed=0 foreign=0 and fell
+	# through to the tear-down branch. Adding a real interface to this fixture
+	# hides the defect, because then the old arithmetic sees foreign>0 and hands
+	# off for the wrong reason -- which is exactly what an earlier version of
+	# this check did, and why it passed against the broken code.
 	wipe_mwan3
-	own_iface wan 1.1.1.1
-	uci set mwan3.wansentry_primary=member; uci set mwan3.wansentry_primary.wansentry=1
-	uci set mwan3.wansentry_fail=policy;    uci set mwan3.wansentry_fail.wansentry=1
+	uci set mwan3.mynotify=notify; uci set mwan3.mynotify.enabled=1
 	uci commit mwan3
-	chk "owned sections matching BOTH tests are not double counted" \
-	    "owned=3 managed=3 foreign=0" "$(gate)"
+	uci set wansentry.main.enabled=0; uci commit wansentry
+	/etc/init.d/mwan3.real enable >/dev/null 2>&1
+	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
+	reconcile >/dev/null
+	chk "an UNKNOWN section type is foreign: mwan3 left alone" "NO" "$(tore_down)"
 
-	uci set mwan3.wansentry_orphan=member; uci commit mwan3
-	chk "the wansentry_ prefix alone counts as owned, matching isOwned()" \
-	    "owned=4 managed=4 foreign=0" "$(gate)"
+	arm_foreign_mwan3
+	reconcile >/dev/null
+	chk "a foreign interface is foreign: mwan3 left alone" "NO" "$(tore_down)"
+
+	# Owned-and-disabled MUST be torn down: that is the rolled-back first enable
+	# the gate exists to catch. If this stops failing to act, the ownership gate
+	# has become "never touch anything", which is a different bug.
+	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
+	uci set wansentry.main.enabled=0; uci commit wansentry
+	/etc/init.d/mwan3.real enable >/dev/null 2>&1
+	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
+	reconcile >/dev/null
+	chk "config wansentry OWNS, with enabled=0: mwan3 IS torn down" "YES" "$(tore_down)"
 
 	wipe_mwan3; uci commit mwan3
-	chk "globals alone is not managed config" \
-	    "owned=0 managed=0 foreign=0" "$(gate)"
+	uci set wansentry.main.enabled=0; uci commit wansentry
+	/etc/init.d/mwan3.real enable >/dev/null 2>&1
+	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
+	reconcile >/dev/null
+	chk "globals only (rolled-back first enable): mwan3 IS torn down" "YES" "$(tore_down)"
+
+	shim_off
 }
 
 # ---------------------------------------------------------------- arming
@@ -164,6 +227,7 @@ test_ownership() {
 test_arming() {
 	head2 "ARMING (mwan3_armed must mean 'a policy is installed')"
 
+	# armed() sources the SHIPPED mwan3_armed(); see its definition above.
 	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
 	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 25
 	chk "a member ONLINE reads as armed" "TRUE" "$(armed)"
@@ -182,51 +246,51 @@ test_arming() {
 }
 
 test_no_spurious_restart() {
-	head2 "RECONCILER RESTART DISCIPLINE (observed, not inferred)"
+	head2 "RECONCILER RESTART DISCIPLINE (observed, and proven to have run)"
 	shim_on
 
+	# EVERY "did not do X" check here first proves the reconciler RAN. Without
+	# that, an empty log reads as good behaviour, and an earlier version of this
+	# suite drove the reconciler through `uci commit` expecting a procd reload
+	# trigger. Measured 2026-08-25: a CLI `uci commit` fires nothing at all, so
+	# those checks asserted on an empty log and passed against the known-broken
+	# v1.0.1 reconciler. `ubus call service event config.change` DOES fire it,
+	# which is the path LuCI's apply uses, and an explicit `reload` fires it
+	# too; this suite uses `reload` because it is synchronous.
 	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
 	uci set wansentry.main.enabled=1; uci set wansentry.main.primary=wan; uci commit wansentry
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 25
 
-	# Let any procd reload trigger from the SETUP commits land before the log is
-	# cleared, otherwise a late trigger -- fired while mwan3 was still unarmed
-	# from the previous group, and therefore legitimately restarting it -- shows
-	# up in this test's window and reads as a spurious restart. That produced a
-	# false FAIL here on 2026-08-25 and the code was correct all along.
-	sleep 10
-	: > /tmp/mwan3-calls.log
-	# A settings edit IS a uci commit, so the trigger this fires is the thing
-	# under test. No explicit reload: that would test a path a user never takes.
-	uci set wansentry.main.down=4; uci commit wansentry
-	sleep 10
-	if grep -q ' restart' /tmp/mwan3-calls.log; then
-		bad "an ordinary settings edit must not restart an armed mwan3"
+	CALLS=$(reconcile)
+	if [ "$CALLS" = "nocalls" ]; then
+		bad "the reconciler did not run at all with an armed, owned config"
 	else
-		ok "an ordinary settings edit does not restart an armed mwan3"
+		ok "the reconciler ran (calls: $CALLS)"
+		chk "an ordinary reload does not restart an ARMED mwan3" "NO" "$(restarted)"
 	fi
 
+	# Every uplink offline: the policy is still installed via last_resort, so
+	# this is still armed and still must not be restarted. This is the case the
+	# v1.0.1 percentage grep got backwards.
 	uci -q delete mwan3.wan.track_ip; uci add_list mwan3.wan.track_ip=192.0.2.1
-	uci commit mwan3; /etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 45
-	sleep 10
-	: > /tmp/mwan3-calls.log
-	uci set wansentry.main.down=5; uci commit wansentry
-	sleep 10
-	if grep -q ' restart' /tmp/mwan3-calls.log; then
-		bad "a reload during a DUAL OUTAGE must not restart mwan3"
+	uci commit mwan3; /etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 50
+	chk "fixture: every uplink offline, policy still installed" "TRUE" "$(armed)"
+	CALLS=$(reconcile)
+	if [ "$CALLS" = "nocalls" ]; then
+		bad "the reconciler did not run at all during a dual outage"
 	else
-		ok "a reload during a dual outage does not restart mwan3"
+		chk "a reload during a DUAL OUTAGE does not restart mwan3" "NO" "$(restarted)"
 	fi
 
+	# No policy at all: genuinely unarmed, and this one MUST be restarted.
 	uci -q delete mwan3.wansentry_fail; uci commit mwan3
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 20
-	sleep 10
-	: > /tmp/mwan3-calls.log
-	/etc/init.d/wansentry reload; sleep 10
-	if grep -q ' restart' /tmp/mwan3-calls.log; then
-		ok "an UNARMED mwan3 is restarted (the original bug stays caught)"
+	chk "fixture: no policy installed, so not armed" "FALSE" "$(armed)"
+	CALLS=$(reconcile)
+	if [ "$CALLS" = "nocalls" ]; then
+		bad "the reconciler did not run at all with an unarmed mwan3"
 	else
-		bad "an unarmed mwan3 must be restarted"
+		chk "an UNARMED mwan3 IS restarted (the original bug stays caught)" 		    "YES" "$(restarted)"
 	fi
 
 	shim_off
@@ -251,8 +315,9 @@ test_security() {
 	    "2 YES" "$(symlinks) $(running)"
 
 	echo "option broken 'unterminated" >> /etc/config/mwan3
-	chk "a PARSE ERROR is reported as unreadable, not as empty" \
-	    "UNREADABLE" "$(gate)"
+	uci -q show mwan3 >/dev/null 2>&1 \
+	  && bad "fixture: uci still reads the corrupted config; the test is inert" \
+	  || ok "fixture: uci cannot read the corrupted config"
 	/etc/init.d/wansentry start >/dev/null 2>&1; sleep 4
 	chk "a parse error must NOT stop or disable a foreign mwan3" \
 	    "2 YES" "$(symlinks) $(running)"
@@ -260,8 +325,9 @@ test_security() {
 	cp "$BK/hand" /etc/config/mwan3
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	mv /etc/config/mwan3 "$BK/away"
-	chk "a MISSING FILE is reported as unreadable, not as empty" \
-	    "UNREADABLE" "$(gate)"
+	uci -q show mwan3 >/dev/null 2>&1 \
+	  && bad "fixture: uci still reads the absent config; the test is inert" \
+	  || ok "fixture: uci cannot read the absent config"
 	/etc/init.d/wansentry start >/dev/null 2>&1; sleep 4
 	chk "a missing config must NOT stop or disable a foreign mwan3" \
 	    "2 YES" "$(symlinks) $(running)"
