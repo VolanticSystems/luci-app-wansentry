@@ -60,8 +60,16 @@ package rests on.
 
 They are not really competitors. Use wansentry to get failover working; if you
 later need load balancing or per-destination policies, install
-`luci-app-mwan3`, and wansentry will step aside the moment it sees a section it
-did not write.
+`luci-app-mwan3` and configure it there.
+
+**What "hands off" actually looks like, because "steps aside" was too soft a
+phrase for it.** The moment wansentry sees an mwan3 section it did not write,
+it stops managing mwan3 entirely: the settings form goes read-only, a banner
+names the foreign sections, and applying is refused rather than merged. The
+service-side reconciler follows the same rule and leaves the mwan3 service
+alone at boot. Nothing you configured elsewhere is modified or removed — but
+this is a clean handover, not graceful coexistence, and you will find a
+read-only page rather than a page that quietly defers.
 
 ## What it generates
 
