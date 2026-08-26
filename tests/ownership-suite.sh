@@ -91,7 +91,7 @@ fi
 echo $$ > "$SUITE_LOCK/pid"
 
 GROUP="${1:-all}"
-PASS=0; FAIL=0; XFAIL=0
+PASS=0; FAIL=0
 BK=/tmp/wansentry-own-backup.$$
 mkdir -p "$BK"
 
