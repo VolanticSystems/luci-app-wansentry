@@ -577,10 +577,25 @@ init right at all. Every grant that remains is scoped exactly to `wansentry`,
    check that the backup interface actually has a gateway, only that mwan3
    reports what it reports. An unplugged backup shows as
    `tracking disabled / paused`, which is accurate but not loud.
-5. **Not tested with a genuinely live second uplink.** All hardware testing was
-   with the backup permanently down (no cable). Config generation, ownership,
-   idempotency and the status view are verified; an actual switchover under
-   load is not.
+5. ~~**Not tested with a genuinely live second uplink.**~~ **CLOSED
+   2026-08-24.** This entry was written when all hardware testing used a backup
+   that was permanently down, and it went stale the day switchover was actually
+   measured. It is struck through rather than deleted because it was wrong in
+   the most damaging way a document can be: the README's headline credibility
+   claim pointed at a design document that contradicted it, and the first thing
+   a sceptic on a public forum does is follow that link.
+
+   What was actually done: failover was verified twice under load, on two
+   independent uplink types — a wired primary failing over to USB cellular
+   tethering, and the same primary failing over to a second broadband line
+   reached over Wi-Fi. **13-14 s to switch against a 15 s threshold, 31 s to
+   fail back against 30 s**, confirmed with interface byte counters rather than
+   status output, so the traffic demonstrably moved and demonstrably came back.
+   A reconciler defect was found and fixed on the way, see §6.4.
+
+   Surfaced by a review panel asked to outline a forum announcement, which
+   noticed the two documents disagreed and correctly refused to guess which was
+   current.
 
 ## 10. Roadmap (queued, post-v1)
 
