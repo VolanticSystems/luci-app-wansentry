@@ -192,6 +192,15 @@ Documented up front rather than left to be discovered.
   applies the same rule. An existing hand-built mwan3 setup is left alone, and
   wansentry will decline to manage it rather than adopt it.
 
+## A sibling package
+
+[`luci-app-appflow`](https://github.com/VolanticSystems/luci-app-appflow) is a
+per-application traffic dashboard: it uses netifyd's deep packet inspection to
+show which applications and which devices are using the connection, live and
+over the past hour. Same author, same OpenWrt release. It answers "what is on
+this link", where wansentry answers "keep the link up"; the two are
+independent and neither requires the other.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
