@@ -122,6 +122,24 @@ still be attempted through the uplink that just died. mwan3 does not solve this
 either. wansentry shows the failure mode and the dnsmasq workaround on screen
 rather than pretending the problem does not exist.
 
+## Tests
+
+Three suites, 82 checks, no failures. Nothing reimplements the logic it tests:
+an earlier suite kept its own copy of the ownership arithmetic and every one of
+those checks passed against a reconciler that was known to be broken, because
+the copy was right when the shipped code was not.
+
+| suite | checks | what it does |
+|---|---|---|
+| `tests/generator-suite.js` | 31 | loads the real browser module under Node and classifies the same configurations the shell suite drives. Needs no router; runs on every push. |
+| `tests/ownership-suite.sh` | 29 | drives the installed init script on a sandbox router, with configurations chosen because the two halves of the ownership rule *could* read them differently. |
+| `tests/hardware-suite.sh` | 22 | the ownership gate, arming, reconciler restart discipline and the security cases. |
+
+The first two exist because the ownership rule is implemented twice and a rule
+implemented twice drifts. They use the same fixtures, in the same notation, so
+the two implementations are held to one answer. Details in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Install
 
 **This package is not in the official OpenWrt feeds**, so there is no one-line

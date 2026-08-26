@@ -558,12 +558,17 @@ next person does not have to rediscover the thread.
     root/usr/share/luci/menu.d/…json            Network -> WAN Failover
     root/usr/share/rpcd/acl.d/…json             ACL
     htdocs/…/view/wansentry/{common,generator,overview}.js
+    po/templates/wansentry.pot                  string catalogue, GENERATED from source
+    tests/ownership-suite.sh                    29 checks, the ownership rule on hardware
+    tests/hardware-suite.sh                     22 checks, gate/arming/restart/security
+    tests/generator-suite.js                    31 checks, the same rule in the browser
+    tests/luci-module.js                        loads a real LuCI view module under Node
 
 ACL grants, and why each is needed:
 
 | Scope | Grant | For |
 |---|---|---|
-| uci read | `wansentry`, `mwan3`, `network` | the form, the generator, the interface picker |
+| uci read | `wansentry`, `mwan3` | the form and the generator |
 | uci write | `wansentry`, `mwan3` | the two configs it owns |
 | ubus read | `mwan3.status` | the status panel |
 | ubus read | `file.exec` + `/sbin/logread -l 200 -e mwan3` | the event list, that exact command only |
