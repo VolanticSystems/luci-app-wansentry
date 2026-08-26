@@ -73,17 +73,30 @@ build auto-confirms as soon as the device is reachable, so a rollback test
 has to *provoke* unreachability rather than assume that doing nothing
 produces it.
 
-**Then run the suites, on a sandbox router and one at a time.**
+**Then run the suites.** The JavaScript one needs only Node and runs anywhere;
+the two shell suites need a sandbox router and must be run one at a time.
 
-    sh tests/hardware-suite.sh        # 22 checks: gate, arming, restart, security
-    sh tests/ownership-suite.sh       # 29 checks: the ownership rule specifically
+    node tests/generator-suite.js     # 31 checks, no router needed
+    sh   tests/hardware-suite.sh      # 22 checks: gate, arming, restart, security
+    sh   tests/ownership-suite.sh     # 29 checks: the ownership rule specifically
 
-Both drive the installed init script and observe what it does to the mwan3
-service. **Neither reimplements the ownership arithmetic, and that is not a
-style preference.** An earlier version of the hardware suite kept its own copy
-of that logic and asserted on the copy; every one of those checks passed
-against a known-broken reconciler, because the copy was correct when the
-shipped code was not.
+**`generator-suite.js` is the other half of the ownership contract.** It loads
+the real `generator.js` under Node through `tests/luci-module.js` and runs
+`audit()` against the same config shapes `ownership-suite.sh` drives through
+the init script, written in the same `uci show mwan3` notation so the two
+halves are described once rather than twice. Describing them twice, in two
+notations, is how they stopped agreeing in the first place. It also feeds
+`desired()`'s own output back through `audit()`, because a generator that
+writes configuration its own classifier then calls foreign is a deadlock the
+user cannot escape from the UI.
+
+The two shell suites drive the installed init script and observe what it does
+to the mwan3 service. **Neither reimplements the ownership arithmetic, and
+that is not a style preference.** An earlier version of the hardware suite kept
+its own copy of that logic and asserted on the copy; every one of those checks
+passed against a known-broken reconciler, because the copy was correct when the
+shipped code was not. `generator-suite.js` follows the same rule on its side:
+it loads the shipped module and calls it, and copies nothing out of it.
 
 `ownership-suite.sh` exists because the ownership rule is implemented twice,
 in the browser and in the init script, and a rule implemented twice drifts. It
@@ -92,10 +105,11 @@ mwan3 configuration this package did not write. Its fixtures are chosen for
 where the two halves *could* read a config differently, not for what a user is
 likely to have.
 
-Both suites restore `/etc/config/mwan3`, `/etc/config/wansentry` and the mwan3
-init script on exit, including on interrupt and on a dropped SSH session, and
-both take an exclusive lock against each other and against the sibling
-package's suites.
+The two shell suites restore `/etc/config/mwan3`, `/etc/config/wansentry` and
+the mwan3 init script on exit, including on interrupt and on a dropped SSH
+session, and both take an exclusive lock against each other and against the
+sibling package's suites. `generator-suite.js` touches nothing outside its own
+process and can be run any time, including in CI, which it is.
 
 **If you add a check, write the sabotage first**, and be careful with hand-off
 cases specifically. A correct hand-off makes no service calls, so its evidence
