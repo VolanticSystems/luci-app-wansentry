@@ -73,6 +73,37 @@ build auto-confirms as soon as the device is reachable, so a rollback test
 has to *provoke* unreachability rather than assume that doing nothing
 produces it.
 
+**Then run the suites, on a sandbox router and one at a time.**
+
+    sh tests/hardware-suite.sh        # 22 checks: gate, arming, restart, security
+    sh tests/ownership-suite.sh       # 29 checks: the ownership rule specifically
+
+Both drive the installed init script and observe what it does to the mwan3
+service. **Neither reimplements the ownership arithmetic, and that is not a
+style preference.** An earlier version of the hardware suite kept its own copy
+of that logic and asserted on the copy; every one of those checks passed
+against a known-broken reconciler, because the copy was correct when the
+shipped code was not.
+
+`ownership-suite.sh` exists because the ownership rule is implemented twice,
+in the browser and in the init script, and a rule implemented twice drifts. It
+has drifted three times, and every time the drift pointed at tearing down
+mwan3 configuration this package did not write. Its fixtures are chosen for
+where the two halves *could* read a config differently, not for what a user is
+likely to have.
+
+Both suites restore `/etc/config/mwan3`, `/etc/config/wansentry` and the mwan3
+init script on exit, including on interrupt and on a dropped SSH session, and
+both take an exclusive lock against each other and against the sibling
+package's suites.
+
+**If you add a check, write the sabotage first**, and be careful with hand-off
+cases specifically. A correct hand-off makes no service calls, so its evidence
+log is empty, so "it did not tear anything down" is equally satisfied by a
+reconciler that never ran. Every hand-off check here proves the reconciler ran
+by a separate route before asserting what it did not do. That defect has been
+in this file twice.
+
 ## Code style
 
 Match the surrounding code:
@@ -96,6 +127,32 @@ Prefix the subject with the package name, lowercase after the colon:
 If you would like the change to be portable upstream to `openwrt/luci` later,
 add a `Signed-off-by:` line with your real name, which is what upstream's DCO
 requires.
+
+## Translations
+
+The string catalogue lives in `po/templates/wansentry.pot`. It is generated
+from the source, not written by hand: every `_('...')` call in
+`htdocs/luci-static/resources/view/wansentry/*.js`, plus the `title` and
+`description` values in `root/usr/share/luci/menu.d/*.json` and
+`root/usr/share/rpcd/acl.d/*.json`. That file selection and those keywords are
+LuCI's, from `build/i18n-scan.pl` in the `openwrt/luci` tree.
+
+To add a language, create `po/<lang>/wansentry.po` from the template and
+translate the `msgstr` lines. **Nothing in `Makefile` needs to change.**
+`luci.mk` discovers languages by globbing `po/*` and generates a
+`luci-i18n-wansentry-<lang>` package for each, so a new directory is the whole
+of the work. The one-package-per-language split is deliberate upstream policy;
+a combined "all languages" package [was proposed and
+rejected](https://github.com/openwrt/luci/issues/4075).
+
+**Take particular care with the failure and hand-off strings.** This package's
+screen has to explain when it is *refusing* to act, and a translation that
+softens "applying is refused" into something closer to "applying may not work"
+turns a definite statement into an ambiguous one at the moment the reader most
+needs a definite one. If a phrase does not translate cleanly, say so in the PR
+rather than guessing; a comment is more useful than a smooth wrong sentence.
+
+Keep the `%s` and `%d` specifiers and their order intact.
 
 ## Where help is most useful
 

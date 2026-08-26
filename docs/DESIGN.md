@@ -233,10 +233,17 @@ entirely; wansentry never edits an existing one.
 
 ### 6.3 Ownership model
 
-The rules, in the order they are evaluated per section:
+The rules, in the order they are evaluated per section. **The order is
+load-bearing and rule 0 comes first:**
 
-1. **Owned** — the section carries `option wansentry '1'`, or its name begins
-   with `wansentry_`. wansentry writes and deletes these freely.
+0. **Type gate.** If the section's type is not one of `interface`, `member`,
+   `policy` or `rule`, it is **foreign immediately** and rules 1 and 2 are
+   never consulted. wansentry generates only those four types, so a section of
+   any other type is by definition something it did not write, whatever it is
+   called and whatever options it carries.
+1. **Owned** — the section passed rule 0 *and* carries `option wansentry '1'`,
+   or its name begins with `wansentry_`. wansentry writes and deletes these
+   freely.
 2. **Stock scaffolding** — the section is byte-identical to one the mwan3
    package ships in its default `/etc/config/mwan3` (22 sections: the
    wan/wanb/balanced example). Package scaffolding is not configuration;
@@ -244,6 +251,22 @@ The rules, in the order they are evaluated per section:
 3. **Foreign** — anything else. wansentry refuses to apply *at all*, marks the
    whole form read-only, and names the offending sections in a banner. It does
    not merge, reconcile or "fix" a configuration a human wrote.
+
+**Rule 0 was implicit until 2026-08-26 and that is exactly how the two
+implementations drifted.** `audit()` in the browser has always tested the type
+first, but this section did not say so, and the service-side reconciler was
+written from this text. It therefore matched the marker and the namespace on
+name alone. A `config notify` section named `wansentry_notify` was foreign in
+the browser and owned on the router, and since `enabled 0` is the shipped
+default the reconciler stopped and disabled it. Reproduced on hardware by
+`tests/ownership-suite.sh`: the identical section under an ordinary name was
+correctly left alone, and only the rename flipped the outcome.
+
+That is the third disagreement between these two counts, and all three pointed
+the same way, at tearing down configuration this package did not write. The
+lesson is not "be careful", it is that **a rule implemented twice needs a test
+that drives both implementations against the same fixtures**, which is what
+that suite now is.
 
 `globals` is exempt from all three: it is mwan3's own infrastructure, never
 owned and never foreign.

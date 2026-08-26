@@ -19,6 +19,48 @@
 
 set -u
 
+# ---------------------------------------------------------------- exclusivity
+#
+# Every suite in these two packages mutates GLOBAL router state: this one
+# rewrites /etc/config/mwan3 and drives the mwan3 service, its sibling repoints
+# appflow.socket_path and restarts appflowd. Two of them running at once
+# corrupt each other's fixtures, and the failures look like product defects.
+#
+# That is not hypothetical. On 2026-08-26 two suites were launched a minute
+# apart against the same router; the second reported two failures that could
+# not be reproduced in isolation, and the ownership arithmetic was rewritten
+# twice chasing a bug that was never there.
+#
+# One lock file for ALL suites across both packages, because the resource being
+# protected is the router, not the config file.
+# mkdir is atomic and is NOT a file descriptor, which is the whole point.
+# The first version of this guard used `exec 9>lock; flock -n 9`. Every child
+# inherits an fd, and these suites launch children that outlive them: socat
+# serving the fake agent, and mwan3track respawned per interface by mwan3's
+# init script. The lock therefore stayed held after the suite exited and the
+# next suite in a serial run was refused. Observed: suite 1 passed, suites 2
+# and 3 produced no output at all because both exited 2.
+SUITE_LOCK=/tmp/openwrt-suite.lock.d
+if ! mkdir "$SUITE_LOCK" 2>/dev/null; then
+	# Someone holds it, or a killed run left it behind. Only the second is
+	# ours to clear, and only when the recorded pid is provably gone.
+	stale=1
+	if [ -r "$SUITE_LOCK/pid" ]; then
+		kill -0 "$(cat "$SUITE_LOCK/pid" 2>/dev/null)" 2>/dev/null && stale=0
+	fi
+	if [ "$stale" = 1 ]; then
+		printf 'clearing a stale suite lock (%s)\n' "$SUITE_LOCK"
+		rm -rf "$SUITE_LOCK"
+		mkdir "$SUITE_LOCK" 2>/dev/null || { printf "cannot take the suite lock\n"; exit 2; }
+	else
+		printf 'another test suite is running on this router (pid %s).\n' \
+		       "$(cat "$SUITE_LOCK/pid" 2>/dev/null)"
+		printf 'they mutate shared router state; run them one at a time.\n'
+		exit 2
+	fi
+fi
+echo $$ > "$SUITE_LOCK/pid"
+
 GROUP="${1:-all}"
 PASS=0; FAIL=0
 BK=/tmp/wansentry-suite-backup.$$
@@ -54,8 +96,16 @@ restore() {
 	rm -rf "$BK" /tmp/mwan3-calls.log
 	rm -f /etc/rc.d/*mwan3.real*
 	printf '\nrestored /etc/config/mwan3 and /etc/config/wansentry\n'
+	rm -rf "$SUITE_LOCK"
 }
-trap 'restore; exit $FAIL' INT TERM EXIT
+# HUP IS IN THAT LIST DELIBERATELY. These suites are normally run over SSH, and
+# a dropped session sends SIGHUP, which the original INT/TERM/EXIT list did not
+# catch: the process died without running the trap. Observed 2026-08-26, where
+# it left a stale lock behind. The lock self-heals; what would NOT self-heal is
+# the rest of what this trap undoes -- the mwan3 init-script shim, a rewritten
+# /etc/config/mwan3, or appflow left pointed at a socket that no longer exists.
+# A router in that state looks broken and gives no clue why.
+trap 'restore; exit $FAIL' INT TERM HUP EXIT
 
 wipe_mwan3() {
 	for s in $(uci show mwan3 2>/dev/null | grep -oE '^mwan3\.[^.]+=' | sed 's/mwan3\.//;s/=//'); do
@@ -99,9 +149,11 @@ own_policy() {
 # Everything below now drives /etc/init.d/wansentry and observes the service.
 #
 # `reconcile` echoes: "<ran|DIDNOTRUN> <calls>" where calls is the shim log.
+RELOAD_RC=1
 reconcile() {
 	: > /tmp/mwan3-calls.log
 	/etc/init.d/wansentry reload >/dev/null 2>&1
+	RELOAD_RC=$?
 	sleep 6
 	if [ "$(grep -c . /tmp/mwan3-calls.log)" -eq 0 ]; then
 		# The reconciler touching nothing is a legitimate outcome (the ownership
@@ -114,6 +166,29 @@ reconcile() {
 		tr '
 ' ' ' < /tmp/mwan3-calls.log
 	fi
+}
+
+# Assert that the last reconcile ACTUALLY RAN, for the cases where a correct
+# run leaves no trace.
+#
+# A hand-off is DEFINED by making no calls, so its shim log is empty, so
+# `chk ... "NO" "$(tore_down)"` is satisfied by a reconciler that never ran at
+# all. Gut reload_service() to `return 0`, drop the trigger from
+# service_triggers(), or chmod -x the init script, and the two hand-off checks
+# in test_ownership below stayed green through all of it.
+#
+# Found by an independent review panel on 2026-08-26 and confirmed against this
+# file. The galling part is that the guard already existed twenty lines up, in
+# test_no_spurious_restart, added deliberately after the restart-discipline
+# checks were caught asserting on an empty log. The lesson was learned in one
+# function and never carried to the other.
+#
+# `/etc/init.d/wansentry reload` is synchronous: rc.common calls
+# reload_service(), which calls reconcile(), before returning. Its exit status
+# is therefore evidence the function ran, and it is the one piece of evidence a
+# correct hand-off cannot erase.
+assert_ran() {
+	chk "the reconciler ran (reload returned 0)" "0" "$RELOAD_RC"
 }
 
 # Did the reconciler stop or disable mwan3 during the last reconcile?
@@ -223,10 +298,12 @@ test_ownership() {
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	reconcile >/dev/null
+	assert_ran
 	chk "an UNKNOWN section type is foreign: mwan3 left alone" "NO" "$(tore_down)"
 
 	arm_foreign_mwan3
 	reconcile >/dev/null
+	assert_ran
 	chk "a foreign interface is foreign: mwan3 left alone" "NO" "$(tore_down)"
 
 	# Owned-and-disabled MUST be torn down: that is the rolled-back first enable
