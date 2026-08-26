@@ -67,9 +67,21 @@ phrase for it.** The moment wansentry sees an mwan3 section it did not write,
 it stops managing mwan3 entirely: the settings form goes read-only, a banner
 names the foreign sections, and applying is refused rather than merged. The
 service-side reconciler follows the same rule and leaves the mwan3 service
-alone at boot. Nothing you configured elsewhere is modified or removed — but
+alone at boot. Nothing you configured elsewhere is modified or removed, but
 this is a clean handover, not graceful coexistence, and you will find a
 read-only page rather than a page that quietly defers.
+
+**What counts as "ours", precisely**, since the whole safety promise rests on
+it. A section is wansentry's only if **both** of these hold:
+
+- its type is one of `interface`, `member`, `policy` or `rule`, and
+- it either carries `option wansentry '1'` or is named `wansentry_*`.
+
+A section of any other type is foreign no matter what it is called, so an
+`mwan3` config carrying, say, a `notify` section is not ours to manage even if
+somebody named it `wansentry_notify`. That rule is implemented twice, in the
+browser and in the init script, and the two are held to agreement by
+`tests/ownership-suite.sh`, which exists because they have drifted before.
 
 ## What it generates
 

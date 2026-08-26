@@ -51,7 +51,7 @@ mwan3_armed() {
 }
 
 reconcile() {
-	local enabled owned managed foreign dump rc
+	local enabled owned managed foreign dump rc managed_names claimed
 	config_load wansentry
 	config_get_bool enabled main enabled 0
 
@@ -92,10 +92,10 @@ reconcile() {
 	# (enabled=0 is the shipped default), before the settings page has ever been
 	# opened.
 	#
-	# owned   = sections the generator's isOwned() would claim: carrying
-	#           `option wansentry '1'` OR living in the wansentry_ namespace.
-	#           Counted by NAME and de-duplicated, because every generated
-	#           section matches both tests and must not count twice.
+	# owned   = sections the generator's isOwned() would claim AND whose type is
+	#           one the generator manages. Counted by NAME and de-duplicated,
+	#           because a generated section matches both ownership tests and
+	#           must not count twice.
 	# managed = every mwan3 section except `globals`, which is mwan3's own
 	#           infrastructure and belongs to neither side.
 	# foreign = anything managed that wansentry did not write.
@@ -103,18 +103,56 @@ reconcile() {
 	# If ANY foreign section exists, hand off entirely: that is a
 	# hand-configured (or still-stock) mwan3 and none of it is ours to touch.
 	#
-	# Both counts previously disagreed with the generator, in the dangerous
-	# direction. `managed` matched only interface/member/policy/rule, so an
-	# mwan3 carrying a section of any OTHER type -- which audit() classifies as
-	# foreign and refuses to write to -- was invisible here: measured
-	# owned=0 managed=0 foreign=0 on a config holding `config notify`, which
-	# takes the branch below and STOPS AND DISABLES a stranger's mwan3. That is
-	# the one thing this package promises never to do. `owned` ignored the
-	# wansentry_ namespace that isOwned() accepts, so a prefixed section without
-	# the option counted as foreign here and as ours in the browser.
-	owned=$(printf '%s\n' "$dump" \
+	# THESE COUNTS HAVE DISAGREED WITH THE GENERATOR THREE TIMES, and every
+	# time the disagreement pointed the same way: towards tearing down mwan3
+	# configuration this package did not write.
+	#
+	#   1. `managed` matched only interface/member/policy/rule, so an mwan3
+	#      carrying a section of any OTHER type was invisible here: measured
+	#      owned=0 managed=0 foreign=0 on a config holding `config notify`,
+	#      which falls through to the stop/disable branch below.
+	#   2. `owned` ignored the wansentry_ namespace that isOwned() accepts, so
+	#      a prefixed section without the option counted as foreign here and as
+	#      ours in the browser.
+	#   3. The fix for 2 tested the NAME alone. See the block below.
+	#
+	# BOTH ownership tests are now gated on the section's TYPE, because the
+	# generator gates on it first and this must mirror the generator exactly.
+	#
+	# audit() in generator.js reads:
+	#
+	#     if (MANAGED_TYPES.indexOf(type) < 0)   foreign.push(...)
+	#     else if (isOwned(sec))                 owned.push(...)
+	#
+	# so a section whose type is outside [interface, member, policy, rule] is
+	# FOREIGN before isOwned() is ever consulted. Neither the marker option nor
+	# the wansentry_ namespace can claim it in the browser.
+	#
+	# This side used to test name and option ALONE. A `config notify` named
+	# `wansentry_notify` was therefore foreign in the browser and owned here,
+	# and with the shipped enabled=0 the else-branch below stopped and disabled
+	# it. Reproduced on hardware 2026-08-26 by tests/ownership-suite.sh: the
+	# identical section under an ordinary name was correctly left alone, and
+	# only the rename flipped it.
+	#
+	# Not attacker-reachable: /etc/config/mwan3 is root:root and root is the
+	# only account with a shell. The reachable actors are a coexisting package,
+	# a hand edit, and this package's own future self the first time it
+	# generates a section of a type MANAGED_TYPES does not name.
+	#
+	# `managed` deliberately still counts every non-globals section, unknown
+	# types included, because an unknown type IS foreign to the generator and
+	# counting it is what drives foreign>0 and makes us hand off.
+	managed_names=$(printf '%s\n' "$dump" \
+		| sed -n "s/^mwan3\.\([^.]*\)=\(interface\|member\|policy\|rule\)$/\1/p" \
+		| sort -u)
+	claimed=$(printf '%s\n' "$dump" \
 		| sed -n "s/^mwan3\.\([^.]*\)\.wansentry='1'$/\1/p; s/^mwan3\.\(wansentry_[^.]*\)=.*/\1/p" \
-		| sort -u | grep -c .)
+		| sort -u)
+	# Intersection without process substitution: both lists are already
+	# `sort -u`, so a line appearing twice in the concatenation appears in both.
+	owned=$(printf '%s\n%s\n' "$managed_names" "$claimed" \
+		| sed '/^$/d' | sort | uniq -d | grep -c .)
 	managed=$(printf '%s\n' "$dump" | grep -E "^mwan3\.[^.]+=" | grep -vc "=globals$")
 	foreign=$(( managed - owned ))
 	[ "$foreign" -gt 0 ] && return 0
