@@ -8,6 +8,21 @@ what it generated. Pick a primary uplink, pick a backup, name two health-check
 hosts, apply. Provided both uplinks already exist as configured network
 interfaces, nothing else has to be visited.
 
+**It is VPN aware, and that is not a checkbox.** If your router steers some
+traffic through a VPN using policy-based routing, turning on failover can
+silently defeat those policies. Nothing breaks and nothing is logged: traffic
+keeps flowing and quietly stops going where you sent it, which on a country
+exit means the affected devices begin appearing in the wrong country.
+`wansentry` detects that arrangement, generates the mwan3 rules that prevent
+it, and tells you on screen which policies it protected and which it could not.
+
+There is a guide to the whole subject in
+[docs/VPN-AND-POLICY-ROUTING.md](docs/VPN-AND-POLICY-ROUTING.md): how to tell
+whether your own tunnel survives a switchover, two settings that look like
+tidy-ups and are not, and the part that has nothing to do with your VPN and
+derails more setups than anything else, which is DNS. It ends with the commands
+to measure your own router rather than trust the numbers in it.
+
 > Status: **working, and failover is verified on hardware.** A live switchover
 > under load has been measured on two independent uplink types: a wired primary
 > failing over to cellular, and the same primary failing over to a second
@@ -15,14 +30,16 @@ interfaces, nothing else has to be visited.
 > detection threshold and failed back in 31 s against a 30 s recovery
 > threshold, confirmed by interface byte counters rather than status output.
 > Config generation, the ownership refusal, rollback and service reconciliation
-> are verified too. See *Known limitations* for what remains, chiefly that this
+> are verified too, as is coexistence with policy-based routing and a VPN:
+> measured on a bench built to replicate a real production stack rather than a
+> clean two-WAN rig, because a clean rig cannot reproduce any of it. See *Known limitations* for what remains, chiefly that this
 > is IPv4 only and does not solve DNS.
 
 ## Why
 
 mwan3 is the right engine for this. It is actively maintained, and every sharp
-edge in dual-WAN failover — probe hysteresis, multi-target tracking, conntrack
-flushing on switchover, hotplug integration — is something it has already
+edge in dual-WAN failover (probe hysteresis, multi-target tracking, conntrack
+flushing on switchover, hotplug integration) is something it has already
 iterated on for a decade. That is not the problem.
 
 The problem is that mwan3 is a *general* policy-routing tool, and its LuCI app
@@ -57,6 +74,7 @@ package rests on.
 | Configuration model | You write mwan3 config | wansentry generates it, and shows you exactly what it wrote |
 | Backend | mwan3 | mwan3 (same engine, same package) |
 | Coexistence | It *is* the mwan3 editor | Refuses to touch mwan3 config it did not create |
+| Policy routing and VPNs | Not its job: you write whatever rules you need | Detects `pbr` policies and generates the mwan3 exclusions that keep them working |
 
 They are not really competitors. Use wansentry to get failover working; if you
 later need load balancing or per-destination policies, install
@@ -86,7 +104,7 @@ browser and in the init script, and the two are held to agreement by
 ## What it generates
 
 Two `interface` sections (tracking options mapped from the form), two `member`
-sections at metric 1 and 2, one failover `policy`, and one default `rule` — the
+sections at metric 1 and 2, one failover `policy`, and one default `rule`, and the
 complete minimal mwan3 failover configuration and not one section more.
 The only exception is mwan3's own `globals` section, which wansentry adds
 (with `mmx_mask`) if and only if the system does not already have one; a
@@ -314,4 +332,4 @@ independent and neither requires the other.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](LICENSE).
