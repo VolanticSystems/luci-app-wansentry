@@ -63,6 +63,11 @@ echo $$ > "$SUITE_LOCK/pid"
 
 GROUP="${1:-all}"
 PASS=0; FAIL=0
+# Checks that could not run because an optional package is absent.
+# Counted and REPORTED: a group that skips silently reads as a passing
+# group to anyone scanning the tail of the output, which is how coverage
+# disappears without anyone deciding to drop it.
+SKIPPED=0
 BK=/tmp/wansentry-suite-backup.$$
 mkdir -p "$BK"
 
@@ -220,6 +225,24 @@ armed() {
 	)
 }
 
+# Poll until mwan3 has actually installed a policy, up to $1 seconds.
+#
+# THIS REPLACED A FIXED `sleep 25`, WHICH WAS AN ORDER DEPENDENCY. 25 seconds is
+# ample when mwan3 was already running, and not always enough immediately after
+# a group that stopped and disabled it: mwan3track has to come up before a
+# policy appears. The result was a suite that passed group-by-group and failed
+# as a whole run, which is the worst way for a test to be wrong, because the
+# green run is the one people quote.
+wait_armed() {
+	__w=0
+	while [ "$__w" -lt "${1:-60}" ]; do
+		[ "$(armed)" = "TRUE" ] && return 0
+		__w=$((__w+2))
+		sleep 2
+	done
+	return 1
+}
+
 # Count mwan3's rc.d entries with a glob rather than `ls | grep`, which SC2010
 # rightly objects to and which would miscount on odd filenames.
 #
@@ -363,7 +386,15 @@ test_no_spurious_restart() {
 	# too; this suite uses `reload` because it is synchronous.
 	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
 	uci set wansentry.main.enabled=1; uci set wansentry.main.primary=wan; uci commit wansentry
-	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 25
+	# A clean stop/start, not a restart over whatever the previous group left.
+	# This group used to inherit a running-but-unarmed mwan3 from the arming
+	# group and a fixed sleep, which is why it passed alone and failed in a
+	# full run. Stopping first also clears any mwan3track processes still
+	# holding the previous fixture.
+	/etc/init.d/mwan3.real stop >/dev/null 2>&1
+	sleep 3
+	/etc/init.d/mwan3.real start >/dev/null 2>&1
+	wait_armed 120 || bad "fixture: mwan3 never armed; the checks below are inert"
 
 	CALLS=$(reconcile)
 	if [ "$CALLS" = "nocalls" ]; then
@@ -458,6 +489,343 @@ test_security() {
 	fi
 }
 
+# ---------------------------------------------------------------- pbr + hooks
+
+# Everything in this group rests on ONE fact about two other packages:
+#
+#   mwan3 installs its ip rules at priority 1001-3002
+#   pbr   installs its ip rules at priority 29995-30000
+#
+# Rule evaluation is ascending, so mwan3 is consulted first and pbr's policy
+# never runs unless wansentry stands mwan3 down for the traffic pbr claims.
+#
+# That is not our fact to control. A pbr or mwan3 release that renumbers its
+# rules would invalidate the whole exclusion mechanism SILENTLY: the generated
+# config would still look right, still apply cleanly, and route to the wrong
+# place. So the premise is asserted here directly rather than assumed, and it
+# is the most important check in this file.
+#
+# Measured 2026-08-27 on OpenWrt 25.12.5 with pbr 1.2.2-r20 / mwan3 2.12.0-r3.
+
+pbr_installed() { [ -x /etc/init.d/pbr ] && return 0; return 1; }
+
+# Lowest priority at which a subsystem installed an ip rule, matched on the
+# rule's TARGET, anchored. Unanchored matching is how 'pbr_wan' silently picks
+# up 'pbr_wanusb' and reports another interface's mark as this one's.
+lowest_prio() {
+	ip -4 rule show 2>/dev/null |
+	  sed -n "s|^\([0-9]*\):.*lookup $1\$|\1|p" | sort -n | head -1
+}
+
+# The fwmark matched by the rule whose target is exactly $1.
+mark_for() {
+	ip -4 rule show 2>/dev/null |
+	  sed -n "s|^[0-9]*:.*fwmark \(0x[0-9a-f]*\)/0x[0-9a-f]*[[:space:]]*lookup $1\$|\1|p" |
+	  head -1
+}
+
+# The device the kernel picks for a packet carrying mark $1. A real FIB lookup
+# through the real rule chain, so it answers the only question that matters:
+# where would this packet actually go.
+fib_dev() {
+	ip route get 1.1.1.1 mark "$1" 2>/dev/null |
+	  sed -n 's/.*dev \([a-z0-9._-]*\).*/\1/p' | head -1
+}
+
+or_mark() { printf '0x%x' $(( $(printf '%d' "$1") | $(printf '%d' "$2") )); }
+
+test_pbr() {
+	head2 "PBR COEXISTENCE: the premise, then the mechanism"
+
+	if ! pbr_installed; then
+		# NOT silent. A skipped group that says nothing reads as a passing
+		# group to anyone scanning the output, which is how coverage quietly
+		# disappears without anyone deciding to drop it.
+		say "  SKIP  pbr is not installed; 8 checks not run (apk add pbr)"
+		SKIPPED=$((SKIPPED+8))
+		return 0
+	fi
+
+	prim=$(uci -q get wansentry.main.primary)
+	back=$(uci -q get wansentry.main.backup)
+
+	if [ -z "$prim" ] || [ -z "$back" ] || [ "$prim" = "$back" ]; then
+		say "  SKIP  needs two distinct uplinks configured in wansentry; 8 checks not run"
+		SKIPPED=$((SKIPPED+8))
+		return 0
+	fi
+
+	# ESTABLISH OUR OWN mwan3 STATE. The security group deliberately leaves
+	# mwan3 stopped and disabled, so a group that inherits whatever the previous
+	# one left finds no ip rules at all and reports "inert" instead of testing
+	# anything. Every group here has to stand up its own fixture.
+	wipe_mwan3
+	uci set mwan3.globals=globals; uci set mwan3.globals.mmx_mask='0x3F00'
+	own_iface "$prim" 1.1.1.1
+	own_iface "$back" 1.1.1.1
+	uci set mwan3.wansentry_primary=member
+	uci set mwan3.wansentry_primary.interface="$prim"
+	uci set mwan3.wansentry_primary.metric=1; uci set mwan3.wansentry_primary.weight=1
+	uci set mwan3.wansentry_primary.wansentry=1
+	uci set mwan3.wansentry_backup=member
+	uci set mwan3.wansentry_backup.interface="$back"
+	uci set mwan3.wansentry_backup.metric=2; uci set mwan3.wansentry_backup.weight=1
+	uci set mwan3.wansentry_backup.wansentry=1
+	uci set mwan3.wansentry_fail=policy
+	uci add_list mwan3.wansentry_fail.use_member=wansentry_primary
+	uci add_list mwan3.wansentry_fail.use_member=wansentry_backup
+	uci set mwan3.wansentry_fail.last_resort=default
+	uci set mwan3.wansentry_fail.wansentry=1
+	uci set mwan3.wansentry_def=rule
+	uci set mwan3.wansentry_def.dest_ip='0.0.0.0/0'
+	uci set mwan3.wansentry_def.use_policy='wansentry_fail'
+	uci set mwan3.wansentry_def.wansentry='1'
+	uci commit mwan3
+	/etc/init.d/mwan3 enable >/dev/null 2>&1
+	/etc/init.d/mwan3 restart >/dev/null 2>&1
+	wait_armed 90 || bad "fixture: mwan3 never armed; pbr checks below are inert"
+
+	cp /etc/config/pbr "$BK/pbr" 2>/dev/null
+
+	# THE FIXTURE POINTS PBR AT THE BACKUP, NOT THE PRIMARY, ON PURPOSE.
+	#
+	# The first version of this group pointed the pbr policy at the same
+	# interface mwan3 was steering to. Every lookup then returned the same
+	# device, so "mwan3 overrode pbr" and "pbr survived" were the same answer
+	# and every check passed no matter what the code did. A discriminating test
+	# needs the two subsystems to disagree about where the packet goes, which
+	# means they must name different interfaces.
+	{
+		echo ''
+		echo "config pbr 'config'"
+		echo "	option enabled '1'"
+		echo "	option strict_enforcement '1'"
+		echo "	option ipv6_enabled '0'"
+		echo "	option resolver_set 'none'"
+		echo ''
+		echo 'config policy'
+		echo "	option name 'wansentry_bench'"
+		echo "	option src_addr '198.51.100.0/24'"
+		echo "	option interface '$back'"
+	} > /etc/config/pbr
+	/etc/init.d/pbr restart >/dev/null 2>&1
+	sleep 14
+
+	m_prio=$(lowest_prio 1)
+	p_prio=$(lowest_prio "pbr_$back")
+
+	if [ -z "$p_prio" ] || [ -z "$m_prio" ]; then
+		bad "fixture: rules missing (mwan3='$m_prio' pbr='$p_prio'); group is inert"
+		cp "$BK/pbr" /etc/config/pbr 2>/dev/null
+		/etc/init.d/pbr restart >/dev/null 2>&1
+		return 0
+	fi
+
+	# THE PREMISE, and the most important check in this file. The exclusion
+	# mechanism is valid only because mwan3's rules are evaluated first. A pbr
+	# or mwan3 release that renumbers its rules would invalidate it SILENTLY:
+	# the generated config would still look right, apply cleanly, and route to
+	# the wrong place.
+	if [ "$m_prio" -lt "$p_prio" ]; then
+		ok "mwan3 rules ($m_prio) are evaluated before pbr rules ($p_prio)"
+	else
+		bad "PREMISE BROKEN: mwan3=$m_prio pbr=$p_prio -- exclusions cannot work"
+	fi
+
+	# The other premise: disjoint masks are why both marks can sit on one
+	# packet without corrupting each other.
+	pmask=$(ip -4 rule show 2>/dev/null |
+	        sed -n 's|^[0-9]*:.*fwmark 0x[0-9a-f]*/\(0x[0-9a-f]*\).*lookup pbr_.*|\1|p' | head -1)
+	mmask=$(uci -q get mwan3.globals.mmx_mask 2>/dev/null)
+	[ -n "$mmask" ] || mmask=0x3F00
+	overlap=$(( $(printf '%d' "${pmask:-0}") & $(printf '%d' "$mmask") ))
+	chk "pbr mask ${pmask:-?} and mwan3 mask $mmask do not overlap" "0" "$overlap"
+
+	pmark=$(mark_for "pbr_$back")
+	imark=$(mark_for 1)
+
+	if [ -z "$pmark" ] || [ -z "$imark" ]; then
+		bad "fixture: could not read live marks (pbr='$pmark' mwan3='$imark')"
+		cp "$BK/pbr" /etc/config/pbr 2>/dev/null
+		/etc/init.d/pbr restart >/dev/null 2>&1
+		return 0
+	fi
+
+	pdev=$(fib_dev "$pmark")
+	mdev=$(fib_dev "$imark")
+
+	# THE ANTI-TAUTOLOGY GUARD. If the two subsystems would route this packet
+	# to the same device, the three checks below cannot tell right from wrong
+	# and must not be allowed to report success.
+	if [ -z "$pdev" ] || [ -z "$mdev" ] || [ "$pdev" = "$mdev" ]; then
+		bad "fixture: pbr and mwan3 both route to '$pdev'; the next 3 checks could not discriminate"
+		cp "$BK/pbr" /etc/config/pbr 2>/dev/null
+		/etc/init.d/pbr restart >/dev/null 2>&1
+		return 0
+	fi
+	ok "fixture discriminates: pbr routes to $pdev, mwan3 to $mdev"
+
+	# THE DEFECT, asserted rather than assumed. Both marks set, and mwan3 wins.
+	# If this ever goes the other way on its own, the exclusions have become
+	# unnecessary and this package is carrying dead code, which is worth being
+	# told about.
+	chk "with both marks set, mwan3 overrides pbr (the defect)" \
+	    "$mdev" "$(fib_dev "$(or_mark "$pmark" "$imark")")"
+
+	# THE FIX. pbr's mark plus mwan3's no-op default mark must reach pbr's
+	# table, because that mark matches none of mwan3's own rules.
+	chk "with mwan3's default mark instead, pbr's decision survives (the fix)" \
+	    "$pdev" "$(fib_dev "$(or_mark "$pmark" "$mmask")")"
+
+	# The generated config must place the exclusion ahead of the catch-all.
+	# mwan3 stops at the first matching rule, so an exclusion behind it is a
+	# rule that can never fire.
+	wipe_mwan3
+	uci set mwan3.globals=globals; uci set mwan3.globals.mmx_mask='0x3F00'
+	own_iface "$prim" 1.1.1.1
+	own_policy "$prim"
+	uci set mwan3.wansentry_pbr1=rule
+	uci set mwan3.wansentry_pbr1.src_ip='198.51.100.0/24'
+	uci set mwan3.wansentry_pbr1.use_policy='default'
+	uci set mwan3.wansentry_pbr1.family='ipv4'
+	uci set mwan3.wansentry_pbr1.wansentry='1'
+	uci set mwan3.wansentry_def=rule
+	uci set mwan3.wansentry_def.dest_ip='0.0.0.0/0'
+	uci set mwan3.wansentry_def.use_policy='wansentry_fail'
+	uci set mwan3.wansentry_def.wansentry='1'
+	uci commit mwan3
+
+	order=$(uci -q show mwan3 | sed -n 's/^mwan3\.\([a-z0-9_]*\)=rule$/\1/p' | tr '\n' ' ')
+	case "$order" in
+		"wansentry_pbr1 wansentry_def "*) ok "the exclusion is ordered before the catch-all" ;;
+		*) bad "rule order is '$order'; the exclusion must come first or it never fires" ;;
+	esac
+
+	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 20
+	if mwan3 rules 2>/dev/null | grep -n '198.51.100.0/24' | head -1 | grep -q '^[12]:'; then
+		ok "mwan3 loaded the exclusion as its first user rule"
+	else
+		bad "mwan3 did not load the exclusion first; it cannot take effect"
+	fi
+
+	cp "$BK/pbr" /etc/config/pbr 2>/dev/null
+	/etc/init.d/pbr restart >/dev/null 2>&1
+}
+
+test_hooks() {
+	head2 "SWITCHOVER HOOKS: fire on a change, and only on a change"
+
+	H=/etc/hotplug.d/iface/99-wansentry
+	D=/etc/wansentry.d
+	S=/tmp/wansentry.active
+	LOG=/tmp/wansentry-hook-test.log
+
+	[ -x "$H" ] && ok "the hotplug script is installed and executable" \
+	            || bad "$H is missing or not executable"
+
+	rm -f "$S" "$LOG"
+
+	# An empty hook directory must cost nothing and write nothing. This is the
+	# state every router that never uses hooks is in, so it is the path that
+	# has to be right.
+	#
+	# SABOTAGE: move the `[ -e "$1" ] || exit 0` guard below the state write.
+	# The state file then appears on a router with no hooks, and this goes red.
+	find "$D" -type f ! -name README -exec rm -f {} \; 2>/dev/null
+	INTERFACE=$(uci -q get wansentry.main.primary) ACTION=ifdown sh "$H" 2>/dev/null
+	[ -f "$S" ] && bad "an empty hook dir still wrote state" \
+	            || ok "an empty hook dir writes no state and does nothing"
+
+	# A hook that records the environment it was handed.
+	cat > "$D/00-bench" <<'HOOKEOF'
+#!/bin/sh
+printf '%s %s %s\n' "$WANSENTRY_OLD" "$WANSENTRY_NEW" "$WANSENTRY_EVENT" \
+    >> /tmp/wansentry-hook-test.log
+HOOKEOF
+	chmod +x "$D/00-bench"
+
+	# An event for an interface wansentry does not steer must be ignored, or
+	# every unrelated iface event on the box runs the hooks.
+	#
+	# SABOTAGE: delete the INTERFACE case guard.
+	rm -f "$S" "$LOG"
+	INTERFACE=definitely_not_ours ACTION=ifup sh "$H" 2>/dev/null
+	[ -f "$LOG" ] && bad "hooks ran for an interface wansentry does not steer" \
+	              || ok "an unrelated interface event does not run hooks"
+
+	# A REAL TRANSITION, seeded rather than inherited.
+	#
+	# The first version relied on there being no state file, so the active
+	# uplink would read as a change from "none". That made the check depend
+	# on mwan3 being armed and reporting an uplink, and the security group
+	# immediately before this one deliberately leaves mwan3 stopped. Under a
+	# full run "active" was therefore also "none", there was no transition,
+	# and the hooks correctly did nothing while the test called it a failure.
+	#
+	# Seeding a sentinel previous uplink guarantees a transition whatever
+	# mwan3 says, which is what this check is actually about.
+	rm -f "$S" "$LOG"
+	printf 'bench_prev 0\n' > "$S"
+	INTERFACE=$(uci -q get wansentry.main.primary) ACTION=ifup sh "$H" 2>/dev/null
+	if [ -s "$LOG" ]; then
+		ok "a change of active uplink runs the hooks"
+		chk "and the hook is told which uplink it moved from" \
+		    "bench_prev" "$(awk '{print $1}' "$LOG" | head -1)"
+	else
+		bad "a change of active uplink did not run the hooks"
+	fi
+
+	# Second identical event: nothing changed, so nothing must run. Without
+	# this every ifup/ifdown on a steered interface re-runs every hook.
+	#
+	# SABOTAGE: delete the `[ "$active" = "$prev" ] && exit 0` line.
+	before=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+	INTERFACE=$(uci -q get wansentry.main.primary) ACTION=ifup sh "$H" 2>/dev/null
+	after=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+	chk "an event that changes nothing does not re-run hooks" "$before" "$after"
+
+	# A hook that fails must be logged and ignored, never able to stall the
+	# rest of a switchover.
+	#
+	# SABOTAGE: drop the `|| log warn` and let the loop inherit set -e style
+	# behaviour, or make a failing hook abort the loop.
+	cat > "$D/01-fails" <<'HOOKEOF'
+#!/bin/sh
+exit 3
+HOOKEOF
+	chmod +x "$D/01-fails"
+	cat > "$D/02-after" <<'HOOKEOF'
+#!/bin/sh
+echo ran-after >> /tmp/wansentry-hook-test.log
+HOOKEOF
+	chmod +x "$D/02-after"
+	rm -f "$S" "$LOG"
+	printf 'bench_prev 0\n' > "$S"
+	INTERFACE=$(uci -q get wansentry.main.primary) ACTION=ifup sh "$H" 2>/dev/null
+	if grep -q ran-after "$LOG" 2>/dev/null; then
+		ok "a failing hook does not stop the hooks after it"
+	else
+		bad "a failing hook stopped the rest of the directory"
+	fi
+
+	# A non-executable file is documentation, not a hook. The directory ships
+	# with a README in it.
+	#
+	# SABOTAGE: drop the `[ -x "$hook" ]` test.
+	rm -f "$S" "$LOG"
+	find "$D" -type f ! -name README -exec rm -f {} \; 2>/dev/null
+	printf '#!/bin/sh\necho SHOULD-NOT-RUN >> /tmp/wansentry-hook-test.log\n' > "$D/03-noexec"
+	chmod 644 "$D/03-noexec"
+	printf 'bench_prev 0\n' > "$S"
+	INTERFACE=$(uci -q get wansentry.main.primary) ACTION=ifup sh "$H" 2>/dev/null
+	grep -q SHOULD-NOT-RUN "$LOG" 2>/dev/null \
+	  && bad "a non-executable file in the hook dir was run" \
+	  || ok "a non-executable file in the hook dir is ignored"
+
+	find "$D" -type f ! -name README -exec rm -f {} \; 2>/dev/null
+	rm -f "$S" "$LOG"
+}
+
 # ---------------------------------------------------------------- run
 
 say "wansentry hardware suite"
@@ -468,9 +836,13 @@ case "$GROUP" in
 	ownership) test_ownership ;;
 	arming)    test_arming; test_no_spurious_restart ;;
 	security)  test_security ;;
-	all)       test_ownership; test_arming; test_no_spurious_restart; test_security ;;
-	*)         say "unknown group '$GROUP' (ownership|arming|security|all)"; exit 2 ;;
+	pbr)       test_pbr ;;
+	hooks)     test_hooks ;;
+	all)       test_ownership; test_arming; test_no_spurious_restart; test_security; test_pbr; test_hooks ;;
+	*)         say "unknown group '$GROUP' (ownership|arming|security|pbr|hooks|all)"; exit 2 ;;
 esac
 
 printf '\n----------------------------------------\n'
-printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
+printf 'passed %d, failed %d' "$PASS" "$FAIL"
+[ "$SKIPPED" -gt 0 ] && printf ', SKIPPED %d (optional package absent, see above)' "$SKIPPED"
+echo

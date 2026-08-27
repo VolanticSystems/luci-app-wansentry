@@ -634,3 +634,221 @@ init right at all. Every grant that remains is scoped exactly to `wansentry`,
 - A "test failover" button: administratively down the primary, watch the status
   panel switch, bring it back.
 - IPv6 as a second, separately-tracked policy once mwan3's v6 defects settle.
+
+## 11. Coexisting with policy-based routing and VPNs
+
+Everything in this section was measured on a bench that deliberately replicates
+a real production router (pbr 1.2.2-r20 with `strict_enforcement '1'`,
+openvpn-openssl 2.7.6, mwan3 2.12.0-r3, two genuinely independent uplinks)
+rather than a clean two-WAN rig. A clean rig cannot reproduce any of it. Dates
+and figures are from 2026-08-27; the raw working is in
+`PBR-MWAN3-BENCH-2026-08-27.md` in the parent repository.
+
+Two predictions made before the bench existed were **wrong**, and both are
+recorded here rather than quietly dropped, because the wrong version is the one
+a reader is likely to arrive with.
+
+### 11.1 The fwmark collision that does not exist
+
+The obvious worry is that pbr and mwan3 both mark packets and will corrupt each
+other. They do not:
+
+```
+pbr    masks on 0x00ff0000    ip rules at priority 29995-30000
+mwan3  masks on 0x00003f00    ip rules at priority  1001-3002
+```
+
+The bit ranges are disjoint. Both marks sit on the same packet quite happily and
+no `mmx_mask` retuning is needed. **Predicted collision: none.**
+
+### 11.2 The real defect: mwan3 silently overrides pbr
+
+What collides is not the marks but the **ip rule priorities**. Rule evaluation
+is ascending, so mwan3's tables are consulted roughly 28,000 priorities before
+pbr's, and pbr's decision never runs.
+
+Measured with `ip route get`, which performs a real FIB lookup through the real
+rule chain:
+
+```
+mark 0x050000  (pbr policy only)   ->  dev tun0  table pbr_vpnusa
+mark 0x000100  (mwan3 uplink only) ->  dev wan   table 1
+mark 0x050100  (both set)          ->  dev wan   table 1      <- pbr lost
+```
+
+and confirmed end to end with real forwarded traffic from a LAN client, using
+the conntrack reply tuple to read back which uplink actually performed the SNAT:
+
+```
+no exclusion   client inside a pbr policy range  ->  192.168.72.10   plain WAN
+exclusion      same client                       ->  10.48.0.2       the tunnel
+```
+
+**Why this matters more than an ordinary bug.** Nothing breaks. Traffic keeps
+flowing, both packages report success, and neither logs anything. The traffic
+simply stops going where the operator sent it. On a router using pbr for a
+country exit, the affected devices quietly begin appearing in the wrong country.
+A failure that presents as success is worth more care than one that presents as
+an outage.
+
+### 11.3 The fix, and why it is a seam rather than a workaround
+
+For every source or destination range an enabled pbr policy claims, the
+generator emits an mwan3 rule carrying `use_policy 'default'`, ordered ahead of
+the catch-all:
+
+```
+config rule 'wansentry_pbr1'
+	option src_ip '192.168.72.128/25'
+	option use_policy 'default'
+	option family 'ipv4'
+	option wansentry '1'
+```
+
+`default` is mwan3's own escape hatch: it stamps only the no-op mark `0x3f00`,
+which matches none of mwan3's own ip rules, so evaluation falls through to pbr's
+at 29996 and the policy survives.
+
+The division of labour this produces is the correct one, not a compromise:
+
+- **pbr decides which traffic enters the tunnel.**
+- **mwan3 decides which uplink the tunnel's own packets ride on.**
+
+The tunnel's outer packets are router-originated and therefore outside any
+sensible pbr source range, which is exactly why they still follow failover while
+the policied traffic does not. Traffic outside pbr's ranges is untouched and
+fails over normally; the bench asserts that with a control client.
+
+**Rule order is load-bearing.** mwan3 evaluates rules in file order and stops at
+the first match, so an exclusion behind the catch-all can never fire. `uci.add`
+appends, so an exclusion created on a later apply would land there. `write()`
+therefore drops and recreates the owned rule sections whenever their order is
+wrong, and only then, so an unchanged re-apply still costs zero uci operations.
+
+**A policy claiming everything is refused, not approximated.** A pbr policy that
+matches on neither a source nor a destination address claims all traffic. An
+mwan3 rule mirroring it would match every packet on the router, including the
+tunnel's own, and switch failover off while appearing to configure it. Those
+policies are skipped and named on screen instead.
+
+**This rests on someone else's numbers.** The priorities above belong to pbr and
+mwan3, not to this package. A release that renumbers them would invalidate the
+mechanism silently: the generated config would still look right and still apply
+cleanly. `tests/hardware-suite.sh pbr` therefore asserts the premise directly,
+and it is the most important check in that file.
+
+### 11.4 The VPN restart that turned out to be unnecessary
+
+The intended centrepiece of this work was a nominated tunnel-restart hook. The
+reasoning was sound and the conclusion was wrong.
+
+The server pushes `Timers: ping 10, ping-restart 120`, and `route_nopull` does
+not block pushed keepalive, so that timer is real. The prediction was up to two
+minutes of blackout after a switchover. Measured over two failure modes, with
+200-second observation windows sampling the whole stack once per iteration:
+
+| failure mode | samples | lost | outage | tunnel restarted? |
+|---|---|---|---|---|
+| `ifdown wan`, link gone | 101 | 0 | none measurable | no |
+| upstream blackholed, link up | 98 | 5 | ~10 s | no |
+
+In both cases the OpenVPN process kept its PID and logged nothing. The
+explanation is in the handshake:
+
+```
+peer-id: 0
+protocol-flags cc-exit tls-ekm dyn-tls-crypt
+```
+
+OpenVPN 2.7 identifies a session by peer-id rather than by source address, so a
+`nobind` client roams to the new uplink's address mid-session without
+renegotiating. `ping-restart` never fires because nothing ever restarts.
+
+The residual ~10 s is **mwan3's own detection time** (`interval` x `down`), not
+the tunnel's, and it is tunable by the failover settings and by nothing else.
+
+**So the feature was retired before it shipped.** A restart on every switchover
+would have been a disruptive action fixing a problem that does not occur. What
+ships instead is section 11.5.
+
+The caveats bound the claim honestly: this is OpenVPN 2.7 with peer-id
+negotiated against a server that supports it. OpenVPN 2.4/2.5, a server without
+float, and WireGuard are all plausibly different and **none of them has been
+measured here.**
+
+### 11.5 Switchover hooks
+
+`/etc/hotplug.d/iface/99-wansentry` runs every executable in
+`/etc/wansentry.d/` when the active uplink changes, and at no other time. The
+directory ships with only a README, and the script exits before doing any work
+when it finds nothing executable in it.
+
+Each hook is given `WANSENTRY_OLD`, `WANSENTRY_NEW` and `WANSENTRY_EVENT`, runs
+as root, and is logged and ignored if it fails so a broken hook cannot hold up
+the rest of a switchover. Repeated events that do not change the active uplink
+run nothing, and a switchover within `DEBOUNCE` seconds of the previous one is
+logged and skipped so a flapping primary cannot thrash whatever the hooks touch.
+Note that failback means an ordinary single outage fires the hooks twice, once
+each way; that is intended.
+
+**Why a hook directory and not a list of services in the web UI.** A settings
+field naming a command to run on switchover is remote command execution handed
+to whoever holds the failover ACL, and a dropdown of every init script on the
+box is the same thing wearing a hat: `/etc/init.d/firewall stop` is on that
+list. Writing to `/etc/wansentry.d/` already requires root, so the hook
+directory adds no privilege the operator did not already have.
+
+The measurement in 11.4 is also the argument for the shape. The obvious use
+turned out not to be needed, and the cases that might need it (older OpenVPN,
+WireGuard, ddns, an SQM instance bound to a device) are all unmeasured. Shipping
+the seam and documenting it is honest; shipping a menu of guesses is not.
+
+### 11.6 Interface roles
+
+The settings screen used to offer every interface except loopback and the
+IPv6-only companions. On a router with a VPN and a few bridges that means `lan`
+and `vpnusa` are offered as candidates for "primary uplink", neither of which
+can work, with nothing on screen saying so.
+
+The instinct behind the old behaviour was right and its conclusion was not.
+An LTE stick, a tethered phone and a neighbour's wifi joined as a station are
+all legitimate backups and none of them looks like a "wan", so guessing by NAME
+would indeed be wrong. But refusing to guess by name does not mean offering
+everything; it means classifying by evidence. Protocol, device and gateway give
+four roles:
+
+| role | evidence | offered by default |
+|---|---|---|
+| uplink | up, and has a gateway | yes |
+| tunnel | tunnel protocol, or a `tun`/`tap`/`wg` device | no |
+| local | up with no gateway, or a bridge that is down | no |
+| unknown | down, and not obviously a bridge | yes |
+
+`unknown` is offered deliberately. It is the LTE stick that is not plugged in,
+and hiding it would make the classifier's mistakes into the user's dead end.
+
+A `tun`/`tap`/`wg` **device** test sits alongside the protocol test because
+OpenVPN on OpenWrt is commonly wired up as `proto none` over `tun0`, which no
+protocol check would ever catch. That is how the reference production router is
+configured.
+
+Nothing is hidden. `show_all_interfaces` lists everything with the reason
+attached, and it is forced on when fewer than two interfaces look like uplinks
+or when a saved selection is one the screen would not otherwise offer, so a
+stored setting can never become unselectable. The classifier can be wrong, most
+obviously for an ISP that delivers the uplink over a tunnel, and the toggle is
+the way past that.
+
+### 11.7 What is still unmeasured
+
+Stated plainly so nobody mistakes silence for coverage:
+
+- WireGuard across a switchover. Expected to re-handshake within seconds, not
+  tested.
+- OpenVPN 2.4/2.5, or any server that does not negotiate peer-id.
+- pbr with `strict_enforcement '0'`, where a policy whose interface is down
+  falls through to the main table instead of refusing.
+- IPv6 throughout. pbr was configured `ipv6_enabled '0'` on the bench, matching
+  the reference router, and this package generates IPv4 policy only.
+- More than one pbr policy set overlapping in ways that produce contradictory
+  exclusions.

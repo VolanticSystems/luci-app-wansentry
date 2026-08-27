@@ -517,10 +517,22 @@ test_acl() {
 	# SABOTAGE: add "network" to read.uci. Checked separately from the write
 	# list because read and write are separate grants and a package can leak
 	# through either.
+	#
+	# THREE FILES, AND THE THIRD IS DELIBERATE. `pbr` was added on 2026-08-27
+	# so the generator can read policy-based routing rules and emit the mwan3
+	# exclusions that stop failover silently overriding them. It is pinned as
+	# an exact set, not a floor, precisely so the next addition has to be
+	# argued for here rather than slipped in.
+	#
+	# Why pbr is acceptable and `network` is not: /etc/config/pbr holds policy
+	# names, addresses, interface names and ports. /etc/config/network holds
+	# PPPoE passwords and WireGuard private keys, and an administrator who
+	# restricted a user to failover settings would not expect that user to be
+	# able to read them. The line is credentials, not tidiness.
 	local rfiles
 	rfiles=$(jsonfilter -i "$A" -e '@["luci-app-wansentry"].read.uci[*]' | sort | tr '\n' ' ')
-	chk "the uci read grant names only this package's two config files" \
-	    "mwan3 wansentry " "$rfiles"
+	chk "the uci read grant names exactly mwan3, pbr and wansentry" \
+	    "mwan3 pbr wansentry " "$rfiles"
 
 	# The one exec grant must stay pinned to the exact command line, arguments
 	# included. `logread` with different arguments is a different capability:

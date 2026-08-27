@@ -17,6 +17,19 @@ config wansentry 'main'
 	option primary ''
 	option backup ''
 
+	# Display only; it does not affect the generated mwan3 configuration.
+	# 0 = the settings screen offers only interfaces that have their own route
+	#     off this router. 1 = every interface is listed, each labelled with why
+	#     it is not normally offered.
+	# Classification is by protocol, device and gateway, never by interface
+	# name: an LTE stick, a tethered phone and a neighbour's wifi joined as a
+	# station are all legitimate backups and none of them is called "wan". It
+	# can still be wrong, most obviously for an ISP that delivers the uplink
+	# over a tunnel, which is indistinguishable from a VPN from here. This
+	# switch is the way past that, and the screen forces it on rather than let
+	# a saved selection become unselectable.
+	option show_all_interfaces '0'
+
 	# Health-check targets. mwan3 pings these through each uplink's own
 	# routing table. Two hosts on different operators is the point: one
 	# ICMP-hostile or briefly unreachable target must not cause a failover,

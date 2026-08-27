@@ -150,13 +150,23 @@ function potMsgids(file) {
 
 // A uci stub whose sections() returns fixture data in LuCI's own shape:
 // each section is a flat object of its options plus '.name' and '.type'.
+// LuCI's uci.sections(conf, type) filters by section type when a type is
+// given. The stub used to ignore the second argument entirely and hand back
+// every section in the package, which made `uci.sections('mwan3', 'globals')`
+// answer "yes there is a globals section" for any mwan3 config that had any
+// section at all. A stub that is more permissive than the real API does not
+// merely fail to catch a bug, it manufactures passes.
 function uciStub(sectionsByPackage) {
 	return {
-		sections: (pkg) => (sectionsByPackage[pkg] || []),
+		sections: (pkg, type) => {
+			const list = sectionsByPackage[pkg] || [];
+			return (type == null) ? list : list.filter((s) => s['.type'] === type);
+		},
 		get: (pkg, sec, opt) => {
 			const list = sectionsByPackage[pkg] || [];
 			const s = list.find((x) => x['.name'] === sec);
-			return s ? s[opt] : undefined;
+			if (!s) return undefined;
+			return (opt == null) ? s : s[opt];
 		}
 	};
 }

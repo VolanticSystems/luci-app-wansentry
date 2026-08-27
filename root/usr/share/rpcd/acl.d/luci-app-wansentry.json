@@ -1,6 +1,6 @@
 {
 	"luci-app-wansentry": {
-		"description": "Grant access to dual-WAN failover configuration",
+		"description": "Grant access to dual-WAN failover configuration. Read on 'pbr' is required to generate the mwan3 exclusion rules that keep policy-based routing working across a failover; that file holds policy names, addresses and interface names, and no credentials. Read on 'network' is deliberately NOT granted: it holds PPPoE and WireGuard secrets.",
 		"read": {
 			"file": {
 				"/sbin/logread -l 200 -e mwan3": [ "exec" ]
@@ -12,7 +12,7 @@
 				"network.interface": [ "dump" ],
 				"uci": [ "changes", "get" ]
 			},
-			"uci": [ "mwan3", "wansentry" ]
+			"uci": [ "mwan3", "pbr", "wansentry" ]
 		},
 		"write": {
 			"ubus": {

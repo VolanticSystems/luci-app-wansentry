@@ -41,6 +41,12 @@ var OWNER_OPT      = 'wansentry',
     POLICY         = 'wansentry_fail',
     RULE           = 'wansentry_def';
 
+/* Exclusion rules generated from pbr's policies (see pbrClaims below). The
+ * prefix is 13 characters, so two digits of index still fit inside mwan3's
+ * 15-character name limit; PBR_MAX enforces that rather than trusting it. */
+var PBR_PREFIX = 'wansentry_pbr',
+    PBR_MAX    = 99;
+
 var MANAGED_TYPES = [ 'interface', 'member', 'policy', 'rule' ];
 
 /* The mwan3 package's shipped /etc/config/mwan3 (verified against
@@ -178,6 +184,150 @@ function settings() {
 	});
 }
 
+/* ------------------------------------------------------- pbr coexistence */
+
+/*
+ * pbr (the Policy Based Routing package) claims traffic by source and
+ * destination and steers it to an interface of its own choosing — most often a
+ * VPN tunnel. Both pbr and mwan3 mark packets and both install `ip rule`
+ * entries, and the naive worry is that their fwmarks collide. They do not:
+ *
+ *     pbr    masks on 0x00ff0000,  ip rules at priority 29995-30000
+ *     mwan3  masks on 0x00003f00,  ip rules at priority  1001-3002
+ *
+ * The bit ranges are disjoint, so both marks sit on the same packet without
+ * either corrupting the other. The problem is the PRIORITIES. Rule evaluation
+ * runs in ascending order, so mwan3's table is consulted roughly 28,000
+ * priorities before pbr's, and pbr's decision never runs.
+ *
+ * Measured on the bench 2026-08-27, with real forwarded traffic and the
+ * conntrack reply tuple naming the uplink that performed the SNAT:
+ *
+ *     without an exclusion  client in a pbr policy range -> plain WAN
+ *     with an exclusion     same client                  -> the tunnel
+ *
+ * Neither package logs anything either way. Traffic keeps flowing and simply
+ * stops going where the operator sent it, which is why this has to be handled
+ * rather than documented.
+ *
+ * The fix is to keep mwan3's hands off traffic pbr has already claimed: an
+ * mwan3 rule carrying `use_policy 'default'`, ordered ahead of the catch-all,
+ * stamps mwan3's no-op mark 0x3f00. That mark matches none of mwan3's own ip
+ * rules, so evaluation falls through to pbr's and the policy survives.
+ *
+ * This is a seam, not a workaround. pbr decides which traffic enters the
+ * tunnel; mwan3 decides which uplink the tunnel's own packets ride on. The
+ * tunnel's outer packets are router-originated and therefore outside any
+ * sensible pbr source range, which is exactly why they still fail over.
+ */
+
+/* pbr accepts several addresses in one option, space or comma separated. mwan3
+ * rules take a single address each, so one pbr policy can yield several
+ * exclusions. */
+function splitAddrs(v) {
+	return String(v == null ? '' : v).split(/[\s,]+/).filter(function(x) { return x.length > 0; });
+}
+
+/* Read pbr's policies and reduce them to the match criteria an mwan3 rule can
+ * express. Returns { claims: [...], skipped: [...] }.
+ *
+ * A policy is SKIPPED, never silently approximated, when it carries neither a
+ * source nor a destination address. Such a policy claims everything, and an
+ * mwan3 rule mirroring it would match every packet on the router — including
+ * the tunnel's own outer packets — and disable failover entirely while
+ * appearing to configure it. Refusing and reporting is the only safe answer.
+ */
+function pbrClaims() {
+	var claims = [], skipped = [];
+
+	/* pbr absent, or its config unreadable, means nothing to exclude. This is
+	 * the common case and must cost nothing. */
+	if (!uci.sections('pbr', 'pbr').length && !uci.sections('pbr', 'policy').length)
+		return { claims: claims, skipped: skipped };
+
+	var globals = uci.sections('pbr', 'pbr')[0];
+
+	/* pbr installed but switched off installs no rules, so nothing can be
+	 * overridden and an exclusion would only add noise. */
+	if (globals && globals.enabled === '0')
+		return { claims: claims, skipped: skipped };
+
+	uci.sections('pbr', 'policy').forEach(function(p) {
+		if (p.enabled === '0')
+			return;
+
+		var src = splitAddrs(p.src_addr),
+		    dst = splitAddrs(p.dest_addr),
+		    name = p.name || p['.name'];
+
+		if (!src.length && !dst.length) {
+			skipped.push(name);
+
+			return;
+		}
+
+		/* mwan3 rejects a port match without a protocol, and pbr allows one.
+		 * Carry ports only when a protocol makes them expressible. */
+		var proto = (p.proto || '').toLowerCase(),
+		    ports = (proto === 'tcp' || proto === 'udp');
+
+		/* Cross-product, because each mwan3 rule holds one address per side. */
+		(src.length ? src : [ null ]).forEach(function(s) {
+			(dst.length ? dst : [ null ]).forEach(function(d) {
+				var c = { policy: name };
+
+				if (s != null) c.src_ip  = s;
+				if (d != null) c.dest_ip = d;
+
+				if (proto && proto !== 'all')
+					c.proto = proto;
+
+				if (ports && p.src_port)  c.src_port  = String(p.src_port);
+				if (ports && p.dest_port) c.dest_port = String(p.dest_port);
+
+				claims.push(c);
+			});
+		});
+	});
+
+	/* Deterministic order, so the same pbr config always produces the same
+	 * mwan3 file and a re-apply stays a no-op. uci section order is stable but
+	 * the cross-product above is not something a reader can predict, and an
+	 * unstable order would churn the config on every apply. */
+	claims.sort(function(a, b) {
+		var ka = [ a.src_ip, a.dest_ip, a.proto, a.src_port, a.dest_port ].join('|'),
+		    kb = [ b.src_ip, b.dest_ip, b.proto, b.src_port, b.dest_port ].join('|');
+
+		return (ka < kb) ? -1 : (ka > kb ? 1 : 0);
+	});
+
+	if (claims.length > PBR_MAX)
+		claims = claims.slice(0, PBR_MAX);
+
+	return { claims: claims, skipped: skipped };
+}
+
+/* The mwan3 rule sections that keep pbr's policies working. */
+function pbrRules() {
+	return pbrClaims().claims.map(function(c, i) {
+		var o = { family: 'ipv4' };
+
+		if (c.src_ip)    o.src_ip    = c.src_ip;
+		if (c.dest_ip)   o.dest_ip   = c.dest_ip;
+		if (c.proto)     o.proto     = c.proto;
+		if (c.src_port)  o.src_port  = c.src_port;
+		if (c.dest_port) o.dest_port = c.dest_port;
+
+		/* 'default' is mwan3's own escape hatch: route by the main table and
+		 * stamp only the no-op mark. It is not a policy wansentry defines, so
+		 * it cannot drift when the failover policy is rewritten. */
+		o.use_policy = 'default';
+		o[OWNER_OPT] = '1';
+
+		return { name: PBR_PREFIX + (i + 1), type: 'rule', options: o };
+	});
+}
+
 /* --------------------------------------------------- desired mwan3 model */
 
 function trackOptions(s) {
@@ -248,14 +398,20 @@ function desired(s) {
 
 	policy[OWNER_OPT] = '1';
 
+	/* Rule ORDER is load-bearing: mwan3 evaluates rules in file order and stops
+	 * at the first match, so every pbr exclusion must precede the catch-all or
+	 * it can never fire. write() enforces this position after the fact, because
+	 * uci.add always appends and a rule added on a later apply would otherwise
+	 * land behind the catch-all and silently do nothing. */
 	return [
 		{ name: s.primary, type: 'interface', options: trackOptions(s) },
 		{ name: s.backup,  type: 'interface', options: trackOptions(s) },
 		{ name: MEMBER_PRIMARY, type: 'member', options: member(s.primary, '1') },
 		{ name: MEMBER_BACKUP,  type: 'member', options: member(s.backup,  '2') },
-		{ name: POLICY, type: 'policy', options: policy },
-		{ name: RULE,   type: 'rule',   options: rule }
-	];
+		{ name: POLICY, type: 'policy', options: policy }
+	].concat(pbrRules(), [
+		{ name: RULE, type: 'rule', options: rule }
+	]);
 }
 
 /* ------------------------------------------------------------- ownership */
@@ -359,6 +515,29 @@ function write(s) {
 			ops++;
 		}
 	});
+
+	/* Rule ORDER is load-bearing. mwan3 evaluates rules in file order and stops
+	 * at the first match, so a pbr exclusion sitting behind the catch-all can
+	 * never fire — and because uci.add appends, that is exactly where one
+	 * created on a later apply would land.
+	 *
+	 * Rather than depend on uci.move's behaviour for sections that are still
+	 * pending creates, drop every rule we own whenever the order is wrong and
+	 * let the loop below recreate them in desired() order. The comparison is
+	 * against the full desired sequence, so this fires only when the order is
+	 * genuinely wrong and an unchanged re-apply still costs zero operations. */
+	var haveRules = uci.sections('mwan3', 'rule')
+	                   .filter(isOwned)
+	                   .map(function(sec) { return sec['.name']; }),
+	    wantRules = want.filter(function(d) { return d.type === 'rule'; })
+	                    .map(function(d) { return d.name; });
+
+	if (haveRules.join('\n') !== wantRules.join('\n')) {
+		haveRules.forEach(function(n) {
+			uci.remove('mwan3', n);
+			ops++;
+		});
+	}
 
 	/* Look globals up by TYPE, not by the name 'globals': mwan3 also accepts an
 	 * anonymous `config globals`, which a name lookup would miss, causing a
@@ -477,6 +656,7 @@ return baseclass.extend({
 	RULE: RULE,
 	MEMBER_PRIMARY: MEMBER_PRIMARY,
 	MEMBER_BACKUP: MEMBER_BACKUP,
+	PBR_PREFIX: PBR_PREFIX,
 
 	settings: settings,
 	normalize: normalize,
@@ -484,5 +664,7 @@ return baseclass.extend({
 	audit: audit,
 	validate: validate,
 	write: write,
-	preview: preview
+	preview: preview,
+	pbrClaims: pbrClaims,
+	pbrRules: pbrRules
 });
