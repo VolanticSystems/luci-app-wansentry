@@ -114,6 +114,50 @@ applying an unchanged configuration produces zero uci operations.
 
 Each of these is argued, with sources, in [docs/DESIGN.md](docs/DESIGN.md).
 
+## If your router already runs pbr or a VPN
+
+This is the case most failover guides skip, and it is the one where getting it
+wrong is hardest to notice.
+
+**pbr and mwan3 both do policy routing, and mwan3 wins.** Their fwmarks do not
+collide (pbr masks on `0x00ff0000`, mwan3 on `0x00003f00`), but their `ip rule`
+priorities do: mwan3 installs at 1001-3002 and pbr at 29995-30000, and rules are
+evaluated in ascending order. So when both have marked a packet, mwan3's table
+is consulted first and **pbr's policy never runs.**
+
+Nothing breaks when this happens. Traffic keeps flowing, both packages report
+success, and neither logs a thing. Your traffic just stops going where you sent
+it. If you use pbr for a country exit, the affected devices quietly start
+appearing in the wrong country.
+
+wansentry detects pbr and generates an mwan3 rule for each range your policies
+claim, carrying `use_policy 'default'` and ordered ahead of the catch-all, so
+mwan3 stands aside for that traffic and pbr's decision survives. Everything
+outside your pbr ranges still fails over normally. The settings screen tells you
+which policies it protected, and names any it could not.
+
+The division of labour that results is the right one: **pbr decides what enters
+the tunnel, wansentry decides which uplink the tunnel rides on.**
+
+**Your VPN probably does not need restarting.** Measured on OpenVPN 2.7 against
+a server that negotiates `peer-id`, a `nobind` client roams to the new uplink
+mid-session: zero packets lost on a clean link failure, and about ten seconds on
+a dead-upstream failure, which is mwan3's own detection time rather than the
+tunnel's. `ping-restart 120` never fires because nothing restarts. A planned
+"restart the tunnel on switchover" feature was dropped once that was measured,
+because it would have been a disruption fixing a problem that does not occur.
+
+Older OpenVPN, a server without float, and WireGuard are all plausibly
+different and none of them has been measured. For those, and for anything else
+that needs a nudge when the uplink changes, drop an executable script in
+`/etc/wansentry.d/`; it is run with `WANSENTRY_OLD` and `WANSENTRY_NEW` set.
+There is deliberately no "run this command on switchover" field in the web UI,
+because that is remote command execution handed to whoever holds the failover
+ACL.
+
+Full working, including the measurements and what remains untested, is in
+[docs/DESIGN.md](docs/DESIGN.md) section 11.
+
 ## What it does not solve
 
 DNS. dnsmasq merges upstream resolvers from every interface that is up and
@@ -137,16 +181,25 @@ are named, and nothing is generated:
 
 ## Tests
 
-Three suites, 82 checks, no failures. Nothing reimplements the logic it tests:
+Three suites, 120 checks, no failures. Nothing reimplements the logic it tests:
 an earlier suite kept its own copy of the ownership arithmetic and every one of
 those checks passed against a reconciler that was known to be broken, because
 the copy was right when the shipped code was not.
 
 | suite | checks | what it does |
 |---|---|---|
-| `tests/generator-suite.js` | 31 | loads the real browser module under Node and classifies the same configurations the shell suite drives. Needs no router; runs on every push. |
+| `tests/generator-suite.js` | 54 | loads the real browser module under Node and classifies the same configurations the shell suite drives, plus the pbr exclusion logic. Needs no router; runs on every push. |
 | `tests/ownership-suite.sh` | 29 | drives the installed init script on a sandbox router, with configurations chosen because the two halves of the ownership rule *could* read them differently. |
-| `tests/hardware-suite.sh` | 22 | the ownership gate, arming, reconciler restart discipline and the security cases. |
+| `tests/hardware-suite.sh` | 37 | the ownership gate, arming, reconciler restart discipline, the security cases, pbr coexistence and the switchover hooks. |
+
+Every check names, in a comment written before the assertion, the smallest edit
+to the *product* that turns it red. That is not a house style: running those
+sabotages is what found two checks in this round that could not fail at all, one
+of which was the check meant to catch non-determinism.
+
+The `pbr` group **skips loudly** when pbr is not installed, and the run reports
+the number of checks that did not run. A group that skips silently reads as a
+passing group to anyone scanning the tail of the output.
 
 The first two exist because the ownership rule is implemented twice and a rule
 implemented twice drifts. They use the same fixtures, in the same notation, so

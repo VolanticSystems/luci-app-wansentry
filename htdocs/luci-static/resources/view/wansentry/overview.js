@@ -148,7 +148,10 @@ return view.extend({
 			L.resolveDefault(uci.load('mwan3'), null),
 			network.getNetworks(),
 			L.resolveDefault(ws.rpc.status(), null),
-			ws.events(8)
+			ws.events(8),
+			/* pbr is optional. resolveDefault so a router without it loads
+			 * exactly as before rather than failing the whole screen. */
+			L.resolveDefault(uci.load('pbr'), null)
 		]);
 	},
 
@@ -236,6 +239,43 @@ return view.extend({
 				])
 			]));
 
+		/* Policy-based routing coexistence. Both packages mark packets, but the
+		 * marks do not collide — pbr uses 0x00ff0000 and mwan3 0x00003f00. What
+		 * collides is ip rule PRIORITY: mwan3 sits at 1001-3002 and pbr at
+		 * 29995-30000, so mwan3 is consulted first and pbr's decision never
+		 * runs. Measured on the bench: a client inside a pbr policy's range
+		 * exits by the plain WAN instead of the tunnel the policy names, and
+		 * neither package logs a thing. The generator emits exclusion rules to
+		 * prevent it; this says so, because a silent fix is indistinguishable
+		 * from no fix when someone is trying to work out what their router is
+		 * doing. */
+		var pbr = gen.pbrClaims();
+
+		if (pbr.claims.length) {
+			var policies = [];
+
+			pbr.claims.forEach(function(c) {
+				if (policies.indexOf(c.policy) < 0)
+					policies.push(c.policy);
+			});
+
+			out.push(ws.note('info', _('Policy-based routing detected'), [
+				E('p', { 'style': 'margin:.3em 0' }, [
+					_('pbr is installed and active. Without help the two packages fight: mwan3 installs its routing rules at a far lower priority than pbr, so mwan3 is consulted first and pbr\'s policies never run. Traffic keeps flowing, nothing is logged, and it simply stops going where you sent it.')
+				]),
+				E('p', { 'style': 'margin:.3em 0' }, [
+					_('%d exclusion rule(s) will be generated so mwan3 leaves the traffic these policies claim alone: %s. Everything else still fails over normally.').format(pbr.claims.length, policies.join(', '))
+				])
+			]));
+		}
+
+		if (pbr.skipped.length)
+			out.push(ws.note('warning', _('Some pbr policies cannot be protected'), [
+				E('span', {}, [
+					_('These pbr policies match on neither a source nor a destination address, so they claim all traffic: %s. An mwan3 rule mirroring one would match every packet on this router, including the tunnel\'s own, and switch failover off while appearing to configure it. They are left alone instead, which means failover may override them. Give each one a source or destination range if you need it protected.').format(pbr.skipped.join(', '))
+				])
+			]));
+
 		return out;
 	},
 
@@ -316,12 +356,123 @@ return view.extend({
 		 * that dump. Verified on hardware -- all six configured interfaces
 		 * appear there, including the ones that are down, and wan6 carries
 		 * proto "dhcpv6", which is precisely the case this filter exists for. */
-		var choices = networks.filter(function(n) {
+		/* Classify by EVIDENCE, never by name. The instinct in the comment above
+		 * is right — an LTE stick, a tethered phone and a neighbour's wifi
+		 * joined as a station are all legitimate backups and none of them looks
+		 * like a "wan" — but the conclusion drawn from it was wrong. Refusing to
+		 * guess by name does not mean offering everything; it means deciding on
+		 * what the interface actually is.
+		 *
+		 * Four roles, from protocol, device and gateway:
+		 *
+		 *   uplink   its own route off the box. Offered by default.
+		 *   tunnel   wireguard, openvpn and friends. Rides ON an uplink, so
+		 *            failing over TO one is meaningless: if the uplink beneath
+		 *            it is down, so is the tunnel.
+		 *   local    a bridge or interface with no gateway. LAN, guest, DMZ.
+		 *   unknown  configured but never seen up, so we genuinely cannot tell.
+		 *            This is the LTE stick that is not plugged in, and it must
+		 *            stay selectable or the classifier's mistakes become the
+		 *            user's dead end.
+		 *
+		 * Nothing is hidden. Ineligible interfaces are still listed, with the
+		 * reason attached, behind a toggle. A user hunting for an interface that
+		 * is simply absent concludes the package is broken; one who can see why
+		 * it is not offered understands in two seconds. */
+		var TUNNEL_PROTOS = [ 'wireguard', 'openvpn', 'ovpn', 'gre', 'gretap',
+		                      'grev6', 'vti', 'vtiv6', 'xfrm', 'l2tp', 'vxlan',
+		                      'zerotier', 'tailscale', 'sstp', 'softethervpn' ];
+
+		function roleOf(n) {
+			var proto = n.getProtocol(),
+			    dev = n.getDevice(),
+			    devname = dev ? dev.getName() : '';
+
+			if (TUNNEL_PROTOS.indexOf(proto) >= 0)
+				return 'tunnel';
+
+			/* A tun/tap device is a tunnel whatever the interface protocol
+			 * claims. OpenVPN on OpenWrt is commonly wired up as `proto none`
+			 * over tun0, which no protocol test would ever catch — it is
+			 * exactly how the reference production router is configured. */
+			if (/^(tun|tap|wg)[0-9-]/.test(devname))
+				return 'tunnel';
+
+			/* A gateway is the evidence that decides the remaining cases. It is
+			 * only trustworthy while the interface is up: an uplink that is
+			 * merely down has no gateway either, and calling that "local" would
+			 * hide the user's backup at the exact moment they came to configure
+			 * it. */
+			if (n.isUp())
+				return n.getGatewayAddr() ? 'uplink' : 'local';
+
+			/* Down. A bridge with no gateway is still plainly a local network;
+			 * anything else is genuinely undecidable. */
+			if (/^br-/.test(devname))
+				return 'local';
+
+			return 'unknown';
+		}
+
+		var ROLE_NOTE = {
+			uplink:  null,
+			tunnel:  _('VPN tunnel — runs over an uplink, cannot be one'),
+			local:   _('local network — no gateway of its own'),
+			unknown: _('never seen up — cannot tell')
+		};
+
+		var classified = networks.filter(function(n) {
+			/* A dhcpv6 interface cannot carry the IPv4 policy this app
+			 * generates, so offering it would only produce an uplink that never
+			 * comes up. That is a capability fact, not a guess, so it stays a
+			 * hard exclusion rather than a labelled one. */
 			return n.getName() !== 'loopback' && n.getProtocol() !== 'dhcpv6';
 		}).map(function(n) {
-			var dev = n.getDevice();
+			var dev = n.getDevice(), role = roleOf(n);
 
-			return [ n.getName(), dev ? '%s (%s)'.format(n.getName(), dev.getName()) : n.getName() ];
+			/* "wan (eth1)" tells a user nothing. Protocol, device and state are
+			 * what let someone with six interfaces pick the right one.
+			 *
+			 * Every part is optional and empties are dropped rather than joined
+			 * anyway. getProtocol() came back empty for every interface on the
+			 * bench, which rendered as "wan — , wan, up": a dangling comma where
+			 * a fact should be. Whether the protocol is available depends on
+			 * what the session may read, and a label must not look broken just
+			 * because one of its inputs was unavailable. */
+			var bits = [ n.getProtocol(), dev ? dev.getName() : null,
+			             n.isUp() ? _('up') : _('down') ]
+			           .filter(function(b) { return b != null && String(b).length > 0; });
+
+			var label = '%s — %s'.format(n.getName(), bits.join(', ')),
+			    note = ROLE_NOTE[role];
+
+			return {
+				name: n.getName(),
+				role: role,
+				label: note ? '%s [%s]'.format(label, note) : label
+			};
+		});
+
+		self.classified = classified;
+
+		var eligible = classified.filter(function(c) {
+			return c.role === 'uplink' || c.role === 'unknown';
+		});
+
+		/* Show everything when the classifier has left the user nothing to pick
+		 * from, or when they have already chosen something it disagrees with —
+		 * a saved setting must never become unselectable, or applying the form
+		 * would silently blank it. */
+		var chosen = [ uci.get('wansentry', 'main', 'primary'),
+		               uci.get('wansentry', 'main', 'backup') ];
+
+		var forceAll = eligible.length < 2 || classified.some(function(c) {
+			return chosen.indexOf(c.name) >= 0 && c.role !== 'uplink' && c.role !== 'unknown';
+		});
+
+		var showAll = forceAll || uci.get('wansentry', 'main', 'show_all_interfaces') === '1';
+		var choices = (showAll ? classified : eligible).map(function(c) {
+			return [ c.name, c.label ];
 		});
 
 		/* ------------------------------------------------------- the form */
@@ -337,6 +488,53 @@ return view.extend({
 		o = s.option(form.Flag, 'enabled', _('Enable failover'),
 			_('Off: the generated mwan3 interfaces are written with tracking disabled and the mwan3 service is stopped and disabled, so this router routes exactly as it did before. On: mwan3 is enabled and started with the configuration below.'));
 		o.rmempty = false;
+
+		o = s.option(form.Flag, 'show_all_interfaces', _('Show every interface'),
+			forceAll
+				? _('Forced on: either fewer than two interfaces look like uplinks, or a saved selection is one this screen would not offer. Everything is listed so nothing you have already chosen can become unselectable.')
+				: _('Off: only interfaces with their own route off this router are offered. On: every interface is listed, each labelled with why it is not normally offered. Classification uses protocol, device and gateway rather than the interface name, and it can be wrong — an ISP that delivers the uplink over a tunnel looks exactly like a VPN from here. Turn this on if your uplink is missing.'));
+		o.rmempty = false;
+		o.readonly = forceAll;
+
+		/* Rebuild both dropdowns in place when the toggle flips, so the effect
+		 * is immediate rather than waiting for a save and a reload. Every step
+		 * is guarded: on any LuCI version where these widget methods are not
+		 * available the toggle simply takes effect on the next page load, which
+		 * is a lesser experience and not a broken one. */
+		o.onchange = function(ev, section_id, value) {
+			var list = (value === '1' || forceAll) ? classified : eligible;
+
+			[ 'primary', 'backup' ].forEach(function(name) {
+				var opt = s.getOption ? s.getOption(name) : null,
+				    el = (opt && opt.getUIElement) ? opt.getUIElement(section_id) : null;
+
+				if (!el || !el.clearChoices || !el.addChoices)
+					return;
+
+				var cur = el.getValue(),
+				    keys = [ '' ],
+				    labels = { '': _('-- please select --') };
+
+				list.forEach(function(c) {
+					keys.push(c.name);
+					labels[c.name] = c.label;
+				});
+
+				/* Never drop a selection off the list. Narrowing the choices
+				 * out from under a value the user already picked would blank
+				 * the field on the next save without ever saying so. */
+				if (cur && keys.indexOf(cur) < 0) {
+					var kept = classified.filter(function(c) { return c.name === cur; })[0];
+
+					keys.push(cur);
+					labels[cur] = kept ? kept.label : cur;
+				}
+
+				el.clearChoices(true);
+				el.addChoices(keys, labels);
+				el.setValue(cur);
+			});
+		};
 
 		o = s.option(form.ListValue, 'primary', _('Primary interface'),
 			_('The uplink traffic uses whenever its health check passes.'));

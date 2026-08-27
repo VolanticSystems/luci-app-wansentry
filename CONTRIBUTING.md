@@ -76,9 +76,34 @@ produces it.
 **Then run the suites.** The JavaScript one needs only Node and runs anywhere;
 the two shell suites need a sandbox router and must be run one at a time.
 
-    node tests/generator-suite.js     # 31 checks, no router needed
-    sh   tests/hardware-suite.sh      # 22 checks: gate, arming, restart, security
+    node tests/generator-suite.js     # 54 checks, no router needed
+    sh   tests/hardware-suite.sh      # 37 checks: gate, arming, restart, security, pbr, hooks
     sh   tests/ownership-suite.sh     # 29 checks: the ownership rule specifically
+
+`hardware-suite.sh` takes a group name to run one part:
+`ownership`, `arming`, `security`, `pbr`, `hooks`, or `all` (the default).
+
+**The `pbr` group needs pbr installed and two distinct uplinks configured.**
+Without either it skips and says so, and the run reports how many checks did not
+run. Do not treat a skipped group as a passing one; that is how coverage
+disappears without anyone deciding to drop it. To run it properly:
+
+    apk add pbr
+    uci set wansentry.main.primary=wan
+    uci set wansentry.main.backup=<your second uplink>
+    uci commit wansentry
+
+The group stands up its own pbr policy pointing at the **backup**, deliberately
+not at the primary. An earlier version pointed it at the same interface mwan3
+was steering to, so every lookup returned the same device and "mwan3 overrode
+pbr" and "pbr survived" were the same answer: the checks passed no matter what
+the code did. There is now an explicit guard that fails the group if the fixture
+cannot discriminate, rather than letting it report success.
+
+**Every group stands up its own mwan3 state.** They used to inherit whatever the
+previous group left, which is why this suite once passed group-by-group and
+failed as a whole run. If you add a group, do not assume mwan3 is running, and
+poll with `wait_armed` rather than sleeping a fixed number of seconds.
 
 **`generator-suite.js` is the other half of the ownership contract.** It loads
 the real `generator.js` under Node through `tests/luci-module.js` and runs
@@ -111,8 +136,17 @@ session, and both take an exclusive lock against each other and against the
 sibling package's suites. `generator-suite.js` touches nothing outside its own
 process and can be run any time, including in CI, which it is.
 
-**If you add a check, write the sabotage first**, and be careful with hand-off
-cases specifically. A correct hand-off makes no service calls, so its evidence
+**If you add a check, write the sabotage first, then actually run it.** Writing
+the sabotage comment is not the same as performing the sabotage, and the
+difference is not academic: in the 2026-08-27 round, running the sabotages found
+two checks that could not fail at all. One compared a fixture against itself and
+would have passed with the code it was testing deleted; the other was the check
+meant to catch non-determinism, and it was itself deterministic either way.
+Both read perfectly well. Copy the package to a scratch directory, apply the
+edit the comment names, and confirm the expected check goes red and nothing
+else does.
+
+**Be careful with hand-off cases specifically.** A correct hand-off makes no service calls, so its evidence
 log is empty, so "it did not tear anything down" is equally satisfied by a
 reconciler that never ran. Every hand-off check here proves the reconciler ran
 by a separate route before asserting what it did not do. That defect has been

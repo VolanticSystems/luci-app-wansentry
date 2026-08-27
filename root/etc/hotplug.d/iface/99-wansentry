@@ -1,0 +1,122 @@
+#!/bin/sh
+# wansentry switchover hooks.
+#
+# Runs every executable in /etc/wansentry.d/ when the ACTIVE UPLINK CHANGES,
+# and at no other time. The directory ships empty; on a router where nobody has
+# put anything in it this script costs one `mwan3 status` per interface event
+# and writes nothing.
+#
+# Why a hook directory and not a list of services in the web UI:
+#
+#   A settings field naming a command to run on switchover is remote command
+#   execution handed to whoever holds the failover ACL, and a dropdown of every
+#   init script on the box is the same thing wearing a hat (`/etc/init.d/firewall
+#   stop` is on that list). Writing to /etc/wansentry.d/ already requires root,
+#   so this adds no privilege that the operator did not already have.
+#
+# What a hook is FOR, based on measurements rather than guesses:
+#
+#   The obvious use, restarting a VPN so it follows the failover, turned out NOT
+#   to be needed for OpenVPN 2.7: it negotiates a peer-id, identifies the session
+#   by that rather than by source address, and a `nobind` client roams to the new
+#   uplink mid-session. Measured over two failure modes, the tunnel never
+#   restarted and never lost more than mwan3's own detection time. See
+#   docs/DESIGN.md.
+#
+#   That is exactly why this is a hook directory and not a feature. Older
+#   OpenVPN, a server without float, WireGuard, ddns, an SQM instance bound to a
+#   device: all plausible, none measured here. Rather than ship a menu of
+#   guesses, ship the seam and document it.
+#
+# Environment given to each hook:
+#
+#   WANSENTRY_OLD     uplink that was carrying traffic, or "none"
+#   WANSENTRY_NEW     uplink now carrying traffic, or "none"
+#   WANSENTRY_EVENT   the netifd action that triggered the check
+#   INTERFACE DEVICE ACTION   as passed by hotplug
+#
+# A hook that fails is logged and ignored: a broken hook must never be able to
+# hold up the rest of the switchover.
+
+HOOK_DIR=/etc/wansentry.d
+STATE=/tmp/wansentry.active
+
+# Minimum seconds between hook runs. A primary that is flapping produces an
+# up/down pair every few seconds, and without this each one would bounce
+# whatever the hooks touch. Failback means an ordinary single outage already
+# fires the hooks twice, once each way, which is correct and intended; this
+# only suppresses the pathological case.
+DEBOUNCE=10
+
+log() { logger -t wansentry -p "daemon.$1" "$2"; }
+
+# Nothing to do if the operator has not written any hooks. Checked before any
+# other work so the common case is as close to free as a shell script gets.
+#
+# The test must be for an EXECUTABLE file, not merely for a file. This
+# directory ships a README, so a `[ -e "$HOOK_DIR"/* ]` test is true on every
+# router in the world: the script would then read mwan3 status and write state
+# on every interface event, on every install, for nothing. That is precisely
+# what the first version did, and tests/hardware-suite.sh caught it.
+[ -d "$HOOK_DIR" ] || exit 0
+
+have_hook=0
+for hook in "$HOOK_DIR"/*; do
+	if [ -f "$hook" ] && [ -x "$hook" ]; then
+		have_hook=1
+		break
+	fi
+done
+[ "$have_hook" = 1 ] || exit 0
+
+# Only react to interfaces this package steers. Without this every unrelated
+# iface event on the box (a guest wifi coming up, a tunnel bouncing) would
+# trigger a status read.
+primary=$(uci -q get wansentry.main.primary)
+backup=$(uci -q get wansentry.main.backup)
+case "$INTERFACE" in
+	"$primary"|"$backup") ;;
+	*) exit 0 ;;
+esac
+
+# The active uplink, as mwan3 itself reports it. Reading mwan3 rather than
+# guessing from ACTION matters: an ifdown on the BACKUP changes nothing about
+# which uplink is carrying traffic, and firing hooks for it would be wrong.
+active=$(mwan3 status 2>/dev/null |
+         sed -n '/Current ipv4 policies/,/^$/p' |
+         sed -n 's/^ \([a-zA-Z0-9_]*\) (100%)/\1/p' | head -1)
+[ -n "$active" ] || active=none
+
+prev=none
+prev_at=0
+if [ -f "$STATE" ]; then
+	read -r prev prev_at 2>/dev/null < "$STATE"
+	[ -n "$prev" ] || prev=none
+	[ -n "$prev_at" ] || prev_at=0
+fi
+
+now=$(date +%s 2>/dev/null || echo 0)
+
+# No change means no switchover. This is the branch that runs almost every time.
+[ "$active" = "$prev" ] && exit 0
+
+# Record the new state BEFORE running hooks. If a hook wedges or the router
+# reboots mid-run, the next event compares against reality rather than replaying
+# a switchover that already happened.
+printf '%s %s\n' "$active" "$now" > "$STATE"
+
+if [ "$((now - prev_at))" -lt "$DEBOUNCE" ] && [ "$prev_at" -ne 0 ]; then
+	log notice "switchover $prev -> $active within ${DEBOUNCE}s, hooks skipped (flapping)"
+	exit 0
+fi
+
+log notice "active uplink changed: $prev -> $active, running hooks"
+
+for hook in "$HOOK_DIR"/*; do
+	[ -f "$hook" ] && [ -x "$hook" ] || continue
+
+	WANSENTRY_OLD="$prev" \
+	WANSENTRY_NEW="$active" \
+	WANSENTRY_EVENT="${ACTION:-unknown}" \
+	"$hook" || log warn "hook ${hook##*/} exited $?"
+done

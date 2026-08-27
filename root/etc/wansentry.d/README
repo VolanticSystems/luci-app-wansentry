@@ -1,0 +1,27 @@
+Scripts placed here are run when wansentry's ACTIVE UPLINK CHANGES, and at no
+other time. Each must be executable. See /etc/hotplug.d/iface/99-wansentry for
+the full contract; the short version is:
+
+  WANSENTRY_OLD     uplink that was carrying traffic, or "none"
+  WANSENTRY_NEW     uplink now carrying traffic, or "none"
+  WANSENTRY_EVENT   the netifd action that triggered the check
+
+A hook that exits non-zero is logged and ignored. Hooks run as root.
+
+Nothing here is required. The directory ships with only this file, and the
+hotplug script exits immediately when it finds nothing executable.
+
+Example, reload a service that caches its egress interface:
+
+    cat > /etc/wansentry.d/10-reload-ddns <<'SH'
+    #!/bin/sh
+    [ "$WANSENTRY_NEW" = "none" ] && exit 0
+    /etc/init.d/ddns reload
+    SH
+    chmod +x /etc/wansentry.d/10-reload-ddns
+
+Before writing a hook, check whether you need one. Measured on OpenVPN 2.7, a
+tunnel follows a switchover by itself without restarting, because the session is
+keyed on a negotiated peer-id rather than on the client's source address.
+Restarting it would be a disruption with nothing to fix. Measure your own case
+before automating a reaction to it.
