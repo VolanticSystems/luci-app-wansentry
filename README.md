@@ -155,7 +155,11 @@ There is deliberately no "run this command on switchover" field in the web UI,
 because that is remote command execution handed to whoever holds the failover
 ACL.
 
-Full working, including the measurements and what remains untested, is in
+**If your router runs a VPN, read [docs/VPN-AND-POLICY-ROUTING.md](docs/VPN-AND-POLICY-ROUTING.md).** It covers this, why DNS is the most
+likely reason a working failover looks broken, how to tell whether your own
+tunnel survives a switchover, two settings that look like tidy-ups and are
+not, and a set of commands for measuring your own router rather than
+trusting the numbers here. The engineering rationale is in
 [docs/DESIGN.md](docs/DESIGN.md) section 11.
 
 ## What it does not solve
@@ -278,7 +282,10 @@ Documented up front rather than left to be discovered.
   resolvers from every interface that is up and does not consult failover
   state, so name resolution can still be attempted through a dead uplink.
   mwan3 has the same gap. wansentry surfaces the failure mode and the dnsmasq
-  workaround on screen instead of pretending otherwise.
+  workaround on screen instead of pretending otherwise. This is the most
+  likely reason a switchover that worked correctly looks broken from the
+  sofa, so it is worth fixing before you need it:
+  [docs/VPN-AND-POLICY-ROUTING.md](docs/VPN-AND-POLICY-ROUTING.md) section 3.
 - **Failover only, by design.** No load balancing, no per-destination policy
   routing. If you need those, use mwan3 directly; wansentry deliberately
   refuses to grow into a second mwan3 UI.

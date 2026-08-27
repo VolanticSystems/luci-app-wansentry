@@ -637,6 +637,11 @@ init right at all. Every grant that remains is scoped exactly to `wansentry`,
 
 ## 11. Coexisting with policy-based routing and VPNs
 
+> **Operator-facing guidance lives in [VPN-AND-POLICY-ROUTING.md](VPN-AND-POLICY-ROUTING.md).**
+> This section is the engineering rationale: why the design is what it is, and
+> what was measured to decide it. The other page is what to do about it on a
+> router, including recipes for measuring your own.
+
 Everything in this section was measured on a bench that deliberately replicates
 a real production router (pbr 1.2.2-r20 with `strict_enforcement '1'`,
 openvpn-openssl 2.7.6, mwan3 2.12.0-r3, two genuinely independent uplinks)
