@@ -122,6 +122,19 @@ still be attempted through the uplink that just died. mwan3 does not solve this
 either. wansentry shows the failure mode and the dnsmasq workaround on screen
 rather than pretending the problem does not exist.
 
+## Screenshots
+
+The settings screen, with both uplinks chosen and the mwan3 configuration it
+will write rendered in full before anything is applied:
+
+![WAN failover settings and the generated mwan3 configuration](docs/overview.png)
+
+And the hand-off. This is what you get if `/etc/config/mwan3` already contains
+anything wansentry did not write. Every field is disabled, the foreign sections
+are named, and nothing is generated:
+
+![Read-only hand-off when a foreign mwan3 configuration is present](docs/foreign-config.png)
+
 ## Tests
 
 Three suites, 82 checks, no failures. Nothing reimplements the logic it tests:
