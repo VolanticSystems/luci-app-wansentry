@@ -16,7 +16,7 @@
  * wansentry, the one screen.
  *
  * Top to bottom: any banner that blocks or qualifies what follows, the live
- * failover status, the nine settings, the exact mwan3 configuration those
+ * failover status, the ten settings, the exact mwan3 configuration those
  * settings produce, and an honest list of what v1 does not solve.
  *
  * Saving writes /etc/config/wansentry through form.Map as usual and then runs

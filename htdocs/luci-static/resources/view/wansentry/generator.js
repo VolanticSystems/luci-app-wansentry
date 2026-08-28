@@ -8,7 +8,7 @@
 /*
  * wansentry, the mwan3 configuration generator.
  *
- * This module is the whole point of the package: it turns the nine fields on
+ * This module is the whole point of the package: it turns the ten fields on
  * the settings screen into the six mwan3 sections a pure 2-WAN failover setup
  * needs, and it does so through LuCI's uci API only. No file is ever written
  * by hand, no template is rendered into /etc/config/mwan3, and nothing here
