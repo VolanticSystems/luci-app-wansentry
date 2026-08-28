@@ -281,7 +281,7 @@ unreachable default table pbr_wanb
 ```
 
 So a policy whose interface is down **refuses** traffic instead of quietly
-rerouting it. That looks harsh and it is the safer behaviour. Without it, that
+rerouting it. That looks harsh and it is the safer behavior. Without it, that
 traffic falls through to the main table and leaves by whatever uplink is up,
 which for a policy pinned to a local-only destination means chasing an RFC1918
 address out over a cellular link.

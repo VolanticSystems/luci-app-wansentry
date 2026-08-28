@@ -377,7 +377,7 @@ config is genuinely empty and when it cannot be parsed at all, and the gate is
 arithmetic over that output: `owned=0 managed=0 foreign=0` takes the
 stop-and-disable branch. Measured on OpenWrt 25.12.5:
 
-| state | `uci -q show mwan3` | rc | old behaviour |
+| state | `uci -q show mwan3` | rc | old behavior |
 |---|---|---|---|
 | valid, populated | 22 lines | 0 | correct |
 | valid, empty | 0 lines | 0 | stop + disable (intended) |
@@ -438,7 +438,7 @@ a rendering decision, and until 2026-08-25 `handleSave()` itself consulted only
 `foreign.length`. The promise is now enforced in the save path, where it
 belongs, rather than depending on a variable in another function. Raised by a
 carrier juror, which was also careful to flag that it could not tell whether the
-button was reachable under `m.readonly`; the fix is defence in depth either way.
+button was reachable under `m.readonly`; the fix is defense in depth either way.
 
 **Arming is decided by whether a policy is installed, not by whether traffic is
 flowing.** `mwan3_armed()` exists because `/etc/init.d/mwan3 running` reports
@@ -558,7 +558,7 @@ next person does not have to rediscover the thread.
     root/usr/share/luci/menu.d/…json            Network -> WAN Failover
     root/usr/share/rpcd/acl.d/…json             ACL
     htdocs/…/view/wansentry/{common,generator,overview}.js
-    po/templates/wansentry.pot                  string catalogue, GENERATED from source
+    po/templates/wansentry.pot                  string catalog, GENERATED from source
     tests/ownership-suite.sh                    29 checks, the ownership rule on hardware
     tests/hardware-suite.sh                     22 checks, gate/arming/restart/security
     tests/generator-suite.js                    31 checks, the same rule in the browser
@@ -714,7 +714,7 @@ config rule 'wansentry_pbr1'
 which matches none of mwan3's own ip rules, so evaluation falls through to pbr's
 at 29996 and the policy survives.
 
-The division of labour this produces is the correct one, not a compromise:
+The division of labor this produces is the correct one, not a compromise:
 
 - **pbr decides which traffic enters the tunnel.**
 - **mwan3 decides which uplink the tunnel's own packets ride on.**
@@ -744,7 +744,7 @@ and it is the most important check in that file.
 
 ### 11.4 The VPN restart that turned out to be unnecessary
 
-The intended centrepiece of this work was a nominated tunnel-restart hook. The
+The intended centerpiece of this work was a nominated tunnel-restart hook. The
 reasoning was sound and the conclusion was wrong.
 
 The server pushes `Timers: ping 10, ping-restart 120`, and `route_nopull` does
@@ -815,8 +815,8 @@ IPv6-only companions. On a router with a VPN and a few bridges that means `lan`
 and `vpnusa` are offered as candidates for "primary uplink", neither of which
 can work, with nothing on screen saying so.
 
-The instinct behind the old behaviour was right and its conclusion was not.
-An LTE stick, a tethered phone and a neighbour's wifi joined as a station are
+The instinct behind the old behavior was right and its conclusion was not.
+An LTE stick, a tethered phone and a neighbor's wifi joined as a station are
 all legitimate backups and none of them looks like a "wan", so guessing by NAME
 would indeed be wrong. But refusing to guess by name does not mean offering
 everything; it means classifying by evidence. Protocol, device and gateway give
