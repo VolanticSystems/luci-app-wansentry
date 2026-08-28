@@ -120,6 +120,14 @@ applying an unchanged configuration produces zero uci operations.
 - **Recovery is slower than failure.** The recovery threshold defaults higher
   than the failure threshold, because flapping back onto a shaky primary is
   worse than staying on a working backup a little longer.
+- **A returning uplink has to prove itself before it gets traffic back.**
+  mwan3 defaults to assuming an interface that comes back is working;
+  wansentry generates the opposite. Pull a cable and both are fine, because
+  the link and the internet return together. Power-cycle a modem and they do
+  not: carrier is back in seconds, the service behind it takes far longer, and
+  assuming otherwise hands traffic to an uplink that cannot carry it. Measured,
+  that costs a second outage of roughly nine seconds. This is why the failover
+  test everybody runs, pulling the cable, does not catch it.
 - **Conntrack is flushed on every transition by default.** Established
   connections carry per-flow NAT and routing-mark state that still points at
   the uplink that just failed; until those entries expire they keep steering

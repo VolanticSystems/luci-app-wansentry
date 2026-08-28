@@ -6,7 +6,7 @@
 'require uci';
 
 /*
- * wansentry — the mwan3 configuration generator.
+ * wansentry, the mwan3 configuration generator.
  *
  * This module is the whole point of the package: it turns the nine fields on
  * the settings screen into the six mwan3 sections a pure 2-WAN failover setup
@@ -21,7 +21,7 @@
  *   2. Sections identical to the ones the mwan3 package ships in its default
  *      /etc/config/mwan3 are package scaffolding, not configuration.
  *      wansentry adopts (deletes) them on first apply.
- *   3. Anything else is foreign. wansentry refuses to apply at all — it does
+ *   3. Anything else is foreign. wansentry refuses to apply at all, it does
  *      not merge, reconcile or "fix" a configuration a human wrote.
  *
  * Rule 2 fails safe: if a future mwan3 release changes its shipped defaults,
@@ -51,8 +51,8 @@ var MANAGED_TYPES = [ 'interface', 'member', 'policy', 'rule' ];
 
 /* The mwan3 package's shipped /etc/config/mwan3 (verified against
  * mwan3 2.12.0-r3 on OpenWrt 25.12.5). Section names alone are not enough to
- * identify scaffolding — a user configuring mwan3 through luci-app-mwan3 edits
- * exactly these sections — so every option value is part of the fingerprint. */
+ * identify scaffolding, a user configuring mwan3 through luci-app-mwan3 edits
+ * exactly these sections, so every option value is part of the fingerprint. */
 var V4_TRACK = [ '1.0.0.1', '1.1.1.1', '208.67.222.222', '208.67.220.220' ],
     V6_TRACK = [ '2606:4700:4700::1001', '2606:4700:4700::1111', '2620:0:ccd::2', '2620:0:ccc::2' ];
 
@@ -188,7 +188,7 @@ function settings() {
 
 /*
  * pbr (the Policy Based Routing package) claims traffic by source and
- * destination and steers it to an interface of its own choosing — most often a
+ * destination and steers it to an interface of its own choosing, most often a
  * VPN tunnel. Both pbr and mwan3 mark packets and both install `ip rule`
  * entries, and the naive worry is that their fwmarks collide. They do not:
  *
@@ -233,8 +233,8 @@ function splitAddrs(v) {
  *
  * A policy is SKIPPED, never silently approximated, when it carries neither a
  * source nor a destination address. Such a policy claims everything, and an
- * mwan3 rule mirroring it would match every packet on the router — including
- * the tunnel's own outer packets — and disable failover entirely while
+ * mwan3 rule mirroring it would match every packet on the router, including
+ * the tunnel's own outer packets, and disable failover entirely while
  * appearing to configure it. Refusing and reporting is the only safe answer.
  */
 function pbrClaims() {
@@ -334,7 +334,35 @@ function trackOptions(s) {
 	var o = {
 		enabled:           s.enabled ? '1' : '0',
 		family:            'ipv4',
-		initial_state:     'online',
+		/* DELIBERATELY NOT mwan3's own default of 'online'. Measured on the
+		 * bench 2026-08-28, and it is the commonest real outage that exposes it.
+		 *
+		 * Pull a cable and the link and the internet behind it return at the
+		 * same instant, so 'online' looks fine. Power-cycle a modem and they do
+		 * not: ethernet carrier comes back in a second or two, the service
+		 * behind it takes another twenty to sixty. 'online' tells mwan3 to
+		 * assume a returning interface is good, so it moves traffic back to an
+		 * uplink that cannot carry it, and the LAN gets a SECOND outage lasting
+		 * until the probes fail again (down x interval).
+		 *
+		 *   initial_state online   link back, internet dead
+		 *                          -> act=wan while wan is disconnecting
+		 *                          -> client BROKEN for ~9 s
+		 *   initial_state offline  same conditions
+		 *                          -> stays on the backup, wan goes offline
+		 *                          -> client never loses routing
+		 *
+		 * The obvious objection is a slow start after a reboot, and it does not
+		 * happen: the generated policy carries `last_resort default`, so until
+		 * an uplink has proved itself traffic falls through to the main routing
+		 * table, which uses the lowest-metric default route. Measured across an
+		 * mwan3 restart, the client stayed reachable throughout apart from the
+		 * one second the restart itself costs, which is identical either way.
+		 *
+		 * A residual blip on link restore remains and is NOT this setting: it is
+		 * `flush_conntrack ifup` clearing the table globally, which the settings
+		 * screen already names as the cost of flushing at all. */
+		initial_state:     'offline',
 		track_method:      'ping',
 		track_ip:          s.track_ip.slice(),
 		/* Any single host answering keeps the uplink up. Some upstreams rate
@@ -507,7 +535,7 @@ function write(s) {
 	    ops = 0;
 
 	/* Adopt the package scaffolding and drop anything we used to own but no
-	 * longer need — an interface section left behind when the user repoints
+	 * longer need, an interface section left behind when the user repoints
 	 * the backup at a different uplink, for instance. */
 	state.stock.concat(state.owned).forEach(function(sec) {
 		if (wantNames.indexOf(sec.name) < 0) {
@@ -518,7 +546,7 @@ function write(s) {
 
 	/* Rule ORDER is load-bearing. mwan3 evaluates rules in file order and stops
 	 * at the first match, so a pbr exclusion sitting behind the catch-all can
-	 * never fire — and because uci.add appends, that is exactly where one
+	 * never fire, and because uci.add appends, that is exactly where one
 	 * created on a later apply would land.
 	 *
 	 * Rather than depend on uci.move's behaviour for sections that are still

@@ -13,7 +13,7 @@
 'require view.wansentry.generator as gen';
 
 /*
- * wansentry — the one screen.
+ * wansentry, the one screen.
  *
  * Top to bottom: any banner that blocks or qualifies what follows, the live
  * failover status, the nine settings, the exact mwan3 configuration those
@@ -33,7 +33,7 @@ function statusOf(status, name) {
 
 /* Which uplink the failover policy is currently steering traffic to. mwan3
  * reports this by reading back its own iptables chains, so an empty result
- * means the policy is not installed at all — the service is stopped, or the
+ * means the policy is not installed at all, the service is stopped, or the
  * configuration has never been applied. */
 function activeUplink(status) {
 	var pol = status && status.policies && status.policies.ipv4 && status.policies.ipv4[gen.POLICY];
@@ -166,7 +166,7 @@ return view.extend({
 		if (!status)
 			summary = _('mwan3 is not answering on ubus. It is stopped, or rpcd has not loaded its plugin.');
 		else if (!active)
-			summary = _('No failover policy installed — mwan3 is not running this configuration.');
+			summary = _('No failover policy installed: mwan3 is not running this configuration.');
 		else
 			summary = _('Traffic is going out over %s.').format(active);
 
@@ -209,7 +209,7 @@ return view.extend({
 		}
 
 		if (audit.foreign.length) {
-			out.push(ws.note('error', _('Manual mwan3 configuration present — wansentry will not touch it'), [
+			out.push(ws.note('error', _('Manual mwan3 configuration present, and wansentry will not touch it'), [
 				E('p', { 'style': 'margin:.3em 0' }, [
 					_('/etc/config/mwan3 contains sections wansentry did not create. Rather than merge with a configuration somebody wrote by hand, wansentry refuses to write anything at all and leaves this screen read-only.')
 				]),
@@ -220,7 +220,7 @@ return view.extend({
 					])
 				]),
 				E('p', { 'style': 'margin:.3em 0' }, [
-					_('Remove them (or reset mwan3 to its packaged defaults) to let wansentry take over. This banner also appears if a newer mwan3 release ships defaults wansentry does not recognise — refusing is the safe direction.')
+					_('Remove them (or reset mwan3 to its packaged defaults) to let wansentry take over. This banner also appears if a newer mwan3 release ships defaults wansentry does not recognise; refusing is the safe direction.')
 				])
 			]));
 
@@ -240,7 +240,7 @@ return view.extend({
 			]));
 
 		/* Policy-based routing coexistence. Both packages mark packets, but the
-		 * marks do not collide — pbr uses 0x00ff0000 and mwan3 0x00003f00. What
+		 * marks do not collide, pbr uses 0x00ff0000 and mwan3 0x00003f00. What
 		 * collides is ip rule PRIORITY: mwan3 sits at 1001-3002 and pbr at
 		 * 29995-30000, so mwan3 is consulted first and pbr's decision never
 		 * runs. Measured on the bench: a client inside a pbr policy's range
@@ -357,9 +357,9 @@ return view.extend({
 		 * appear there, including the ones that are down, and wan6 carries
 		 * proto "dhcpv6", which is precisely the case this filter exists for. */
 		/* Classify by EVIDENCE, never by name. The instinct in the comment above
-		 * is right — an LTE stick, a tethered phone and a neighbour's wifi
+		 * is right, an LTE stick, a tethered phone and a neighbour's wifi
 		 * joined as a station are all legitimate backups and none of them looks
-		 * like a "wan" — but the conclusion drawn from it was wrong. Refusing to
+		 * like a "wan", but the conclusion drawn from it was wrong. Refusing to
 		 * guess by name does not mean offering everything; it means deciding on
 		 * what the interface actually is.
 		 *
@@ -393,7 +393,7 @@ return view.extend({
 
 			/* A tun/tap device is a tunnel whatever the interface protocol
 			 * claims. OpenVPN on OpenWrt is commonly wired up as `proto none`
-			 * over tun0, which no protocol test would ever catch — it is
+			 * over tun0, which no protocol test would ever catch, it is
 			 * exactly how the reference production router is configured. */
 			if (/^(tun|tap|wg)[0-9-]/.test(devname))
 				return 'tunnel';
@@ -416,9 +416,9 @@ return view.extend({
 
 		var ROLE_NOTE = {
 			uplink:  null,
-			tunnel:  _('VPN tunnel — runs over an uplink, cannot be one'),
-			local:   _('local network — no gateway of its own'),
-			unknown: _('never seen up — cannot tell')
+			tunnel:  _('VPN tunnel: runs over an uplink, cannot be one'),
+			local:   _('local network: no gateway of its own'),
+			unknown: _('never seen up: cannot tell')
 		};
 
 		var classified = networks.filter(function(n) {
@@ -435,7 +435,7 @@ return view.extend({
 			 *
 			 * Every part is optional and empties are dropped rather than joined
 			 * anyway. getProtocol() came back empty for every interface on the
-			 * bench, which rendered as "wan — , wan, up": a dangling comma where
+			 * bench, which rendered as "wan, , wan, up": a dangling comma where
 			 * a fact should be. Whether the protocol is available depends on
 			 * what the session may read, and a label must not look broken just
 			 * because one of its inputs was unavailable. */
@@ -443,7 +443,7 @@ return view.extend({
 			             n.isUp() ? _('up') : _('down') ]
 			           .filter(function(b) { return b != null && String(b).length > 0; });
 
-			var label = '%s — %s'.format(n.getName(), bits.join(', ')),
+			var label = '%s: %s'.format(n.getName(), bits.join(', ')),
 			    note = ROLE_NOTE[role];
 
 			return {
@@ -460,7 +460,7 @@ return view.extend({
 		});
 
 		/* Show everything when the classifier has left the user nothing to pick
-		 * from, or when they have already chosen something it disagrees with —
+		 * from, or when they have already chosen something it disagrees with,
 		 * a saved setting must never become unselectable, or applying the form
 		 * would silently blank it. */
 		var chosen = [ uci.get('wansentry', 'main', 'primary'),
@@ -492,7 +492,7 @@ return view.extend({
 		o = s.option(form.Flag, 'show_all_interfaces', _('Show every interface'),
 			forceAll
 				? _('Forced on: either fewer than two interfaces look like uplinks, or a saved selection is one this screen would not offer. Everything is listed so nothing you have already chosen can become unselectable.')
-				: _('Off: only interfaces with their own route off this router are offered. On: every interface is listed, each labelled with why it is not normally offered. Classification uses protocol, device and gateway rather than the interface name, and it can be wrong — an ISP that delivers the uplink over a tunnel looks exactly like a VPN from here. Turn this on if your uplink is missing.'));
+				: _('Off: only interfaces with their own route off this router are offered. On: every interface is listed, each labelled with why it is not normally offered. Classification uses protocol, device and gateway rather than the interface name, and it can be wrong: an ISP that delivers the uplink over a tunnel looks exactly like a VPN from here. Turn this on if your uplink is missing.'));
 		o.rmempty = false;
 		o.readonly = forceAll;
 
@@ -542,7 +542,7 @@ return view.extend({
 		choices.forEach(function(c) { o.value(c[0], c[1]); });
 
 		o = s.option(form.ListValue, 'backup', _('Backup interface'),
-			_('Used only while the primary is down. It must be a working netifd interface with its own gateway — wansentry does not create interfaces, it only steers between them.'));
+			_('Used only while the primary is down. It must be a working netifd interface with its own gateway. wansentry does not create interfaces, it only steers between them.'));
 		o.value('', _('-- please select --'));
 		choices.forEach(function(c) { o.value(c[0], c[1]); });
 
@@ -576,7 +576,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'flush_conntrack', _('Flush connection tracking on switchover'),
-			_('Recommended. When an uplink changes state the kernel still holds conntrack entries pinned to the old gateway, and TCP treats the resulting ICMP unreachables as a soft error — so clients retransmit into a dead path for minutes instead of reconnecting. Flushing forces every connection to be re-established over the surviving uplink. The cost is that connections on the healthy uplink are dropped too, because mwan3\'s flush is global rather than per-uplink.'));
+			_('Recommended. When an uplink changes state the kernel still holds conntrack entries pinned to the old gateway, and TCP treats the resulting ICMP unreachables as a soft error, so clients retransmit into a dead path for minutes instead of reconnecting. Flushing forces every connection to be re-established over the surviving uplink. The cost is that connections on the healthy uplink are dropped too, because mwan3\'s flush is global rather than per-uplink.'));
 		o.rmempty = false;
 
 		return m.render().then(function(mapNode) {
