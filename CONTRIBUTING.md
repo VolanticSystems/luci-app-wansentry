@@ -6,7 +6,7 @@ failover test described under *Where help is most useful* below.
 ## Scope, before you start
 
 wansentry is deliberately narrow: **IPv4 failover between exactly two
-uplinks, on one screen, with nine fields.** Load balancing, more than two
+uplinks, on one screen, with ten fields.** Load balancing, more than two
 uplinks, per-destination policy routing and a second mwan3 options editor are
 explicit non-goals, argued in [docs/DESIGN.md](docs/DESIGN.md) 1 and 2.
 

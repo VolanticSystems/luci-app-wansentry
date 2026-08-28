@@ -118,7 +118,7 @@ asymmetry drives the ordering in §6.4.
 ## 4. Architecture
 
     LuCI view (overview.js)
-        │  form.Map over /etc/config/wansentry  — the 9 fields
+        │  form.Map over /etc/config/wansentry  — the 10 fields
         ▼
     generator.js  — pure model: settings -> desired mwan3 sections
         │  uci.add / uci.set / uci.remove   (LuCI uci JS API only)
@@ -152,9 +152,9 @@ One menu entry, `Network → WAN Failover`. Top to bottom:
    (from `policies.ipv4.wansentry_fail`), two uplink lanes with tracking state,
    probe state, link uptime, time in current state, score/lost and the
    per-host probe table, then the recent transition list.
-3. **The nine fields.** Enable, primary, backup, health-check hosts, check
-   interval, failure threshold, recovery threshold, return-to-primary, flush
-   conntrack. Nothing else.
+3. **The ten fields.** Enable, show-every-interface, primary, backup,
+   health-check hosts, check interval, failure threshold, recovery threshold,
+   return-to-primary, flush conntrack. Nothing else.
 4. **Generated mwan3 configuration**, the exact text that will land in
    `/etc/config/mwan3`, rendered from the same model the writer uses. A
    generator whose output you cannot audit is a black box, and the audience for

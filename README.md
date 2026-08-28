@@ -3,7 +3,7 @@
 **Dual-WAN failover on OpenWrt, in one screen and about five minutes.**
 
 `wansentry` does not implement failover. It *generates* the mwan3 configuration
-that implements failover, from nine fields on a single LuCI page, and then owns
+that implements failover, from ten fields on a single LuCI page, and then owns
 what it generated. Pick a primary uplink, pick a backup, name two health-check
 hosts, apply. Provided both uplinks already exist as configured network
 interfaces, nothing else has to be visited.
