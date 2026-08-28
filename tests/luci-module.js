@@ -34,11 +34,57 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 
+// LuCI adds String.prototype.format in luci-base's luci.js, and product code
+// uses it freely. Node does not have it, so without this the classifier throws
+// "format is not a function" the moment it builds a label.
+//
+// This is a faithful copy of LuCI's behaviour for the directives the product
+// actually uses, not an approximation: positional (%1$s), %s, %d/%i, %f, %%.
+// An unknown directive is left alone rather than silently eaten, so a product
+// change that starts using one fails visibly here instead of rendering wrong.
+if (!String.prototype.format) {
+	Object.defineProperty(String.prototype, 'format', {
+		value: function (...args) {
+			let i = 0;
+			return this.replace(/%(?:(\d+)\$)?([sdifj%])/g, (m, pos, kind) => {
+				if (kind === '%') return '%';
+				const v = args[pos ? (parseInt(pos, 10) - 1) : i++];
+				switch (kind) {
+					case 'd':
+					case 'i': return String(parseInt(v, 10));
+					case 'f': return String(parseFloat(v));
+					case 'j': return JSON.stringify(v);
+					default:  return (v == null) ? '' : String(v);
+				}
+			});
+		}
+	});
+}
+
+
 // Strip the LuCI loader directives. They are bare string-expression statements
 // at the top of the file, exactly `'require name';` or `'require name as x';`,
 // and they are the only thing preventing the file from evaluating as ordinary
 // JavaScript. Replaced with a blank line each so every reported line number
 // still matches the real file.
+// The same String.prototype.format, as SOURCE TEXT, so it can be evaluated
+// inside the vm realm where the module actually runs.
+const FORMAT_SRC = `
+Object.defineProperty(String.prototype, 'format', {
+  value: function () {
+    var args = arguments, i = 0;
+    return this.replace(/%(?:(\d+)\$)?([sdifj%])/g, function (m, pos, kind) {
+      if (kind === '%') return '%';
+      var v = args[pos ? (parseInt(pos, 10) - 1) : i++];
+      if (kind === 'd' || kind === 'i') return String(parseInt(v, 10));
+      if (kind === 'f') return String(parseFloat(v));
+      if (kind === 'j') return JSON.stringify(v);
+      return (v == null) ? '' : String(v);
+    });
+  }
+});
+`;
+
 function stripRequires(src) {
 	return src.replace(/^\s*'require [^']*';\s*$/gm, '');
 }
@@ -123,7 +169,14 @@ function load(file, stubs) {
 		'(function(){\n' + stripRequires(src) + '\n})()',
 		{ filename: path.basename(file) }
 	);
-	const mod = fn.runInNewContext(vm.createContext(sandbox));
+	// vm gives the module its own REALM, with its own String.prototype, so the
+	// polyfill above (which patched Node's) does not reach it. This bit once:
+	// a direct call to format() in the test worked while the product code threw
+	// "format is not a function". Build the context first, install the LuCI
+	// runtime extensions INSIDE it, then evaluate the module.
+	const ctx = vm.createContext(sandbox);
+	new vm.Script(FORMAT_SRC, { filename: 'luci-runtime-shim.js' }).runInContext(ctx);
+	const mod = fn.runInContext(ctx);
 
 	// Non-enumerable so it cannot be mistaken for part of the module's own
 	// export surface by a test that iterates the keys.

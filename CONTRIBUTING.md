@@ -76,7 +76,7 @@ produces it.
 **Then run the suites.** The JavaScript one needs only Node and runs anywhere;
 the two shell suites need a sandbox router and must be run one at a time.
 
-    node tests/generator-suite.js     # 54 checks, no router needed
+    node tests/generator-suite.js     # 80 checks, no router needed
     sh   tests/hardware-suite.sh      # 37 checks: gate, arming, restart, security, pbr, hooks
     sh   tests/ownership-suite.sh     # 29 checks: the ownership rule specifically
 
@@ -216,3 +216,17 @@ patch or no patch.
 Worth including: whether the switchover happened, roughly how long it took,
 whether existing connections recovered or hung, and whether conntrack
 flushing behaved as expected.
+
+
+**Put browser logic where Node can load it.** LuCI serves JavaScript under a
+`?v=` token derived from the LuCI version, not the file, so reinstalling a
+package does not change the URL and a browser keeps running the old copy. A fix
+then cannot be distinguished from a caching artifact. The interface classifier
+was moved out of `overview.js` into `generator.js` for exactly this reason,
+after a real bug survived browser-only review and then took two burned browser
+caches to confirm. If you are adding logic that decides something, put it in a
+module `tests/luci-module.js` can load, and leave only rendering in the view.
+
+When you do need a browser, an IP alias on the router
+(`ip addr add 192.168.1.9/24 dev br-lan`) is a different origin and therefore a
+clean cache.

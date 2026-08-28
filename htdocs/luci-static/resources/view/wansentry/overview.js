@@ -337,143 +337,38 @@ return view.extend({
 		 * stranger's mwan3 is enforced in the save path itself. */
 		self.mwan3Loaded = mwan3Loaded;
 
-		/* Everything except loopback and the IPv6-only companion interfaces is
-		 * offered. An LTE stick, a phone tethered over USB and a neighbour's
-		 * wifi joined as a station are all legitimate backups and none of them
-		 * look like a "wan" interface, so guessing by name would be wrong; but
-		 * a dhcpv6 interface cannot carry the IPv4 policy this app generates,
-		 * and offering it would only produce an uplink that never comes up. */
-		/* getProtocol() rather than uci.get('network', ..., 'proto'). Reading the
-		 * raw config would require granting `uci: network` in the ACL, which is
-		 * the whole file: PPPoE and 802.1x credentials and wireguard private
-		 * keys all live there, and a user an administrator restricted to
-		 * failover settings alone could then read every one of them. A security
-		 * audit raised it and the grant is gone.
+		/* A COMMENT THAT USED TO SIT HERE WAS WRONG, and recording that is worth
+		 * more than deleting it quietly. It claimed getProtocol() was sufficient
+		 * without granting uci read on `network`, because LuCI's
+		 * enumerateNetworks() falls back to the netifd dump and would supply the
+		 * protocol anyway. It does not. Loaded as a genuinely restricted user,
+		 * getProtocol() returned empty for every interface, so every label lost
+		 * its protocol and device and the dhcpv6 filter failed OPEN and offered
+		 * wan6 as a candidate uplink.
 		 *
-		 * This is not merely equivalent, it is sufficient: LuCI's
-		 * enumerateNetworks() falls back to the netifd interface dump for any
-		 * interface uci did not supply, instantiating it with the proto from
-		 * that dump. Verified on hardware -- all six configured interfaces
-		 * appear there, including the ones that are down, and wan6 carries
-		 * proto "dhcpv6", which is precisely the case this filter exists for. */
-		/* Classify by EVIDENCE, never by name. The instinct in the comment above
-		 * is right, an LTE stick, a tethered phone and a neighbour's wifi
-		 * joined as a station are all legitimate backups and none of them looks
-		 * like a "wan", but the conclusion drawn from it was wrong. Refusing to
-		 * guess by name does not mean offering everything; it means deciding on
-		 * what the interface actually is.
+		 * The claim said "verified on hardware", and it had been, as root. Root
+		 * can read /etc/config/network, so the fallback was never exercised. The
+		 * fix reads netifd through _ubus(), which is how LuCI's own isUp() works
+		 * and needs no extra call. See generator.js ifProto(). */
+		/* The classifier lives in generator.js so it can be tested under Node.
+		 * It used to sit here, where the only way to check it was to look at it
+		 * in a browser, and a real bug survived that: loaded as a genuinely
+		 * restricted user, every label lost its protocol and device and the
+		 * IPv6 filter failed open, offering wan6 as a candidate uplink.
 		 *
-		 * Four roles, from protocol, device and gateway:
-		 *
-		 *   uplink   its own route off the box. Offered by default.
-		 *   tunnel   wireguard, openvpn and friends. Rides ON an uplink, so
-		 *            failing over TO one is meaningless: if the uplink beneath
-		 *            it is down, so is the tunnel.
-		 *   local    a bridge or interface with no gateway. LAN, guest, DMZ.
-		 *   unknown  configured but never seen up, so we genuinely cannot tell.
-		 *            This is the LTE stick that is not plugged in, and it must
-		 *            stay selectable or the classifier's mistakes become the
-		 *            user's dead end.
-		 *
-		 * Nothing is hidden. Ineligible interfaces are still listed, with the
-		 * reason attached, behind a toggle. A user hunting for an interface that
-		 * is simply absent concludes the package is broken; one who can see why
-		 * it is not offered understands in two seconds. */
-		var TUNNEL_PROTOS = [ 'wireguard', 'openvpn', 'ovpn', 'gre', 'gretap',
-		                      'grev6', 'vti', 'vtiv6', 'xfrm', 'l2tp', 'vxlan',
-		                      'zerotier', 'tailscale', 'sstp', 'softethervpn' ];
-
-		function roleOf(n) {
-			var proto = n.getProtocol(),
-			    dev = n.getDevice(),
-			    devname = dev ? dev.getName() : '';
-
-			if (TUNNEL_PROTOS.indexOf(proto) >= 0)
-				return 'tunnel';
-
-			/* A tun/tap device is a tunnel whatever the interface protocol
-			 * claims. OpenVPN on OpenWrt is commonly wired up as `proto none`
-			 * over tun0, which no protocol test would ever catch, it is
-			 * exactly how the reference production router is configured. */
-			if (/^(tun|tap|wg)[0-9-]/.test(devname))
-				return 'tunnel';
-
-			/* A gateway is the evidence that decides the remaining cases. It is
-			 * only trustworthy while the interface is up: an uplink that is
-			 * merely down has no gateway either, and calling that "local" would
-			 * hide the user's backup at the exact moment they came to configure
-			 * it. */
-			if (n.isUp())
-				return n.getGatewayAddr() ? 'uplink' : 'local';
-
-			/* Down. A bridge with no gateway is still plainly a local network;
-			 * anything else is genuinely undecidable. */
-			if (/^br-/.test(devname))
-				return 'local';
-
-			return 'unknown';
-		}
-
-		var ROLE_NOTE = {
-			uplink:  null,
-			tunnel:  _('VPN tunnel: runs over an uplink, cannot be one'),
-			local:   _('local network: no gateway of its own'),
-			unknown: _('never seen up: cannot tell')
-		};
-
-		var classified = networks.filter(function(n) {
-			/* A dhcpv6 interface cannot carry the IPv4 policy this app
-			 * generates, so offering it would only produce an uplink that never
-			 * comes up. That is a capability fact, not a guess, so it stays a
-			 * hard exclusion rather than a labelled one. */
-			return n.getName() !== 'loopback' && n.getProtocol() !== 'dhcpv6';
-		}).map(function(n) {
-			var dev = n.getDevice(), role = roleOf(n);
-
-			/* "wan (eth1)" tells a user nothing. Protocol, device and state are
-			 * what let someone with six interfaces pick the right one.
-			 *
-			 * Every part is optional and empties are dropped rather than joined
-			 * anyway. getProtocol() came back empty for every interface on the
-			 * bench, which rendered as "wan, , wan, up": a dangling comma where
-			 * a fact should be. Whether the protocol is available depends on
-			 * what the session may read, and a label must not look broken just
-			 * because one of its inputs was unavailable. */
-			var bits = [ n.getProtocol(), dev ? dev.getName() : null,
-			             n.isUp() ? _('up') : _('down') ]
-			           .filter(function(b) { return b != null && String(b).length > 0; });
-
-			var label = '%s: %s'.format(n.getName(), bits.join(', ')),
-			    note = ROLE_NOTE[role];
-
-			return {
-				name: n.getName(),
-				role: role,
-				label: note ? '%s [%s]'.format(label, note) : label
-			};
-		});
-
-		self.classified = classified;
-
-		var eligible = classified.filter(function(c) {
-			return c.role === 'uplink' || c.role === 'unknown';
-		});
-
-		/* Show everything when the classifier has left the user nothing to pick
-		 * from, or when they have already chosen something it disagrees with,
-		 * a saved setting must never become unselectable, or applying the form
-		 * would silently blank it. */
+		 * A saved selection is passed in so it can never become unselectable. */
 		var chosen = [ uci.get('wansentry', 'main', 'primary'),
 		               uci.get('wansentry', 'main', 'backup') ];
-
-		var forceAll = eligible.length < 2 || classified.some(function(c) {
-			return chosen.indexOf(c.name) >= 0 && c.role !== 'uplink' && c.role !== 'unknown';
-		});
-
-		var showAll = forceAll || uci.get('wansentry', 'main', 'show_all_interfaces') === '1';
-		var choices = (showAll ? classified : eligible).map(function(c) {
-			return [ c.name, c.label ];
-		});
+		
+		var cls = gen.classify(networks, chosen,
+		                       uci.get('wansentry', 'main', 'show_all_interfaces') === '1');
+		
+		var classified = cls.all,
+		    eligible   = cls.eligible,
+		    forceAll   = cls.forceAll,
+		    choices    = cls.choices;
+		
+		self.classified = classified;
 
 		/* ------------------------------------------------------- the form */
 
