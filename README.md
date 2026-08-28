@@ -211,7 +211,7 @@ are named, and nothing is generated:
 
 ## Tests
 
-Three suites, 143 checks, no failures. Nothing reimplements the logic it tests:
+Three suites, 146 checks, no failures. Nothing reimplements the logic it tests:
 an earlier suite kept its own copy of the ownership arithmetic and every one of
 those checks passed against a reconciler that was known to be broken, because
 the copy was right when the shipped code was not.
