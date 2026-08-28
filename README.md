@@ -61,7 +61,7 @@ rather than take it on trust.
 
 The conclusion wansentry draws from that history is that the gap worth filling
 is a simpler *configuration* path onto mwan3, not another failover mechanism.
-That is a judgement, not a measurement, and it is the premise the whole
+That is a judgment, not a measurement, and it is the premise the whole
 package rests on.
 
 ## How it compares
@@ -162,7 +162,7 @@ mwan3 stands aside for that traffic and pbr's decision survives. Everything
 outside your pbr ranges still fails over normally. The settings screen tells you
 which policies it protected, and names any it could not.
 
-The division of labour that results is the right one: **pbr decides what enters
+The division of labor that results is the right one: **pbr decides what enters
 the tunnel, wansentry decides which uplink the tunnel rides on.**
 
 **Your VPN probably does not need restarting.** Measured on OpenVPN 2.7 against
@@ -298,7 +298,7 @@ Documented up front rather than left to be discovered.
   default, so expect roughly 15 s before traffic moves, and roughly 30 s before
   it moves back (`interval x recovery threshold`). Measured on hardware at 13-14 s
   and 31 s. Shortening the interval detects faster and flaps more; the defaults
-  favour not flapping.
+  favor not flapping.
 - **Existing connections are dropped on a switchover** when conntrack flushing
   is on, which is the default. That is the point: entries pinned to the dead
   uplink would otherwise keep steering traffic down it. But mwan3's flush is
