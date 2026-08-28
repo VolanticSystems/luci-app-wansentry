@@ -142,6 +142,8 @@ Each of these is argued, with sources, in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## If your router already runs pbr or a VPN
 
+(The banner this describes is at the top of the screenshot further down.)
+
 This is the case most failover guides skip, and it is the one where getting it
 wrong is hardest to notice.
 
@@ -198,8 +200,11 @@ rather than pretending the problem does not exist.
 
 ## Screenshots
 
-The settings screen, with both uplinks chosen and the mwan3 configuration it
-will write rendered in full before anything is applied:
+The settings screen, taken on a bench router with `pbr` installed and three
+policies present. Top to bottom: the pbr banner naming the policies it found
+and will generate exclusion rules for, live failover status for both uplinks,
+the ten fields, and then the complete mwan3 configuration it will write,
+rendered before anything is applied:
 
 ![WAN failover settings and the generated mwan3 configuration](docs/overview.png)
 
