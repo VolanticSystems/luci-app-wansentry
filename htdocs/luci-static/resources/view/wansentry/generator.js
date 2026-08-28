@@ -328,6 +328,166 @@ function pbrRules() {
 	});
 }
 
+/* ------------------------------------------------ interface classification */
+
+/*
+ * Which interfaces may be offered as an uplink, and why the others may not.
+ *
+ * Classify by EVIDENCE, never by name. The instinct to refuse name-guessing is
+ * right: an LTE stick, a tethered phone and a neighbour's wifi joined as a
+ * station are all legitimate backups and none of them is called "wan". But
+ * refusing to guess by name does not mean offering everything; it means
+ * deciding on what the interface actually is.
+ *
+ * Four roles, from protocol, device and gateway:
+ *
+ *   uplink   up, and has a gateway of its own. Offered.
+ *   tunnel   a tunnel protocol, or a tun/tap/wg device. Rides ON an uplink, so
+ *            failing over TO one is meaningless: if the uplink beneath it is
+ *            down, so is the tunnel.
+ *   local    up with no gateway, or a bridge that is down. LAN, guest, DMZ.
+ *   unknown  down and not obviously a bridge, so we genuinely cannot tell.
+ *            OFFERED DELIBERATELY: this is the LTE stick that is not plugged
+ *            in, and hiding it would turn the classifier's mistakes into the
+ *            user's dead end.
+ *
+ * Nothing is hidden. Ineligible interfaces are still listed, with the reason
+ * attached, behind a toggle.
+ */
+
+var TUNNEL_PROTOS = [ 'wireguard', 'openvpn', 'ovpn', 'gre', 'gretap',
+                      'grev6', 'vti', 'vtiv6', 'xfrm', 'l2tp', 'vxlan',
+                      'zerotier', 'tailscale', 'sstp', 'softethervpn' ];
+
+/* netifd first, uci second.
+ *
+ * LuCI's Network object reads the protocol and the device from
+ * /etc/config/network, and this package deliberately does NOT grant uci read on
+ * that file: it holds PPPoE passwords and WireGuard private keys. So on a
+ * properly restricted session getProtocol() and getDevice() return nothing.
+ *
+ * _ubus() reads netifd's own dump, which LuCI has already fetched for other
+ * reasons and which the ACL does grant. It is how LuCI's own isUp() works, and
+ * isUp() kept working on a restricted session while getProtocol() did not,
+ * which is exactly the clue. Using it costs no extra RPC call.
+ *
+ * Guarded with typeof so that if a future LuCI drops the method this falls back
+ * to the uci path instead of throwing.
+ */
+function ifProto(n) {
+	var v = (n && typeof n._ubus === 'function') ? n._ubus('proto') : null;
+
+	return String(v || (n && n.getProtocol && n.getProtocol()) || '');
+}
+
+function ifDevice(n) {
+	var v = (n && typeof n._ubus === 'function')
+	        ? (n._ubus('device') || n._ubus('l3_device')) : null;
+
+	if (v)
+		return String(v);
+
+	var dev = (n && n.getDevice) ? n.getDevice() : null;
+
+	return dev ? String(dev.getName()) : '';
+}
+
+function roleOf(n) {
+	var proto = ifProto(n),
+	    devname = ifDevice(n);
+
+	if (TUNNEL_PROTOS.indexOf(proto) >= 0)
+		return 'tunnel';
+
+	/* A tun/tap/wg device is a tunnel whatever the interface protocol claims.
+	 * OpenVPN on OpenWrt is commonly wired up as `proto none` over tun0, which
+	 * no protocol test would ever catch, and that is how the reference
+	 * production router is configured. */
+	if (/^(tun|tap|wg)[0-9-]/.test(devname))
+		return 'tunnel';
+
+	/* A gateway is the evidence that decides the rest, and it is only
+	 * trustworthy while the interface is up: an uplink that is merely down has
+	 * no gateway either, and calling that "local" would hide the user's backup
+	 * at the moment they came to configure it. */
+	if (n.isUp && n.isUp())
+		return (n.getGatewayAddr && n.getGatewayAddr()) ? 'uplink' : 'local';
+
+	if (/^br-/.test(devname))
+		return 'local';
+
+	return 'unknown';
+}
+
+/* Classify every interface and work out what the settings screen may offer.
+ *
+ * networks  LuCI Network objects (or anything with the same four accessors)
+ * chosen    [primary, backup] as currently saved, so a stored selection can
+ *           never become unselectable
+ * showAll   the user's toggle
+ *
+ * Returns { all, eligible, forceAll, choices }.
+ */
+function classify(networks, chosen, showAll) {
+	var NOTE = {
+		uplink:  null,
+		tunnel:  _('VPN tunnel: runs over an uplink, cannot be one'),
+		local:   _('local network: no gateway of its own'),
+		unknown: _('never seen up: cannot tell')
+	};
+
+	var picked = L.toArray(chosen).filter(function(x) { return x != null && x !== ''; });
+
+	var all = L.toArray(networks).filter(function(n) {
+		/* An IIPv6-only interface cannot carry the IPv4 policy this package
+		 * generates, so offering it would only produce an uplink that never
+		 * comes up.
+		 *
+		 * This used to read `n.getProtocol() !== 'dhcpv6'`, which is TRUE when
+		 * the protocol is merely unavailable, so on a restricted session every
+		 * IPv6-only interface was offered as a candidate uplink. ifProto()
+		 * consults netifd, so the protocol is known even then. */
+		return n && n.getName && n.getName() !== 'loopback' && ifProto(n) !== 'dhcpv6';
+	}).map(function(n) {
+		var role = roleOf(n);
+
+		/* "wan (eth1)" tells a user nothing. Protocol, device and state are
+		 * what let someone with six interfaces pick the right one. Empty parts
+		 * are dropped rather than joined anyway, so a label never renders a
+		 * dangling comma because one input was unavailable. */
+		var bits = [ ifProto(n), ifDevice(n), (n.isUp && n.isUp()) ? _('up') : _('down') ]
+		           .filter(function(b) { return b != null && String(b).length > 0; });
+
+		var label = '%s: %s'.format(n.getName(), bits.join(', '));
+
+		return {
+			name: n.getName(),
+			role: role,
+			label: NOTE[role] ? '%s [%s]'.format(label, NOTE[role]) : label
+		};
+	});
+
+	var eligible = all.filter(function(c) {
+		return c.role === 'uplink' || c.role === 'unknown';
+	});
+
+	/* Show everything when the classifier has left too little to pick from, or
+	 * when a saved selection is one it would not offer. Narrowing the list out
+	 * from under a stored value would blank it on the next save. */
+	var forceAll = eligible.length < 2 || all.some(function(c) {
+		return picked.indexOf(c.name) >= 0 && c.role !== 'uplink' && c.role !== 'unknown';
+	});
+
+	var list = (forceAll || showAll) ? all : eligible;
+
+	return {
+		all: all,
+		eligible: eligible,
+		forceAll: forceAll,
+		choices: list.map(function(c) { return [ c.name, c.label ]; })
+	};
+}
+
 /* --------------------------------------------------- desired mwan3 model */
 
 function trackOptions(s) {
@@ -694,5 +854,9 @@ return baseclass.extend({
 	write: write,
 	preview: preview,
 	pbrClaims: pbrClaims,
-	pbrRules: pbrRules
+	pbrRules: pbrRules,
+	classify: classify,
+	roleOf: roleOf,
+	ifProto: ifProto,
+	ifDevice: ifDevice
 });

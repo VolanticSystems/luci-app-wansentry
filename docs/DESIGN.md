@@ -914,3 +914,63 @@ fast path, where link and service return together, and it passes. The defect
 lives in the case a cable pull cannot produce. Operator-facing version of the
 same material, with the commands to reproduce it:
 [VPN-AND-POLICY-ROUTING.md](VPN-AND-POLICY-ROUTING.md) section 8.
+
+## 13. The classifier, and what a restricted session sees
+
+The interface classifier decides which interfaces a user may pick as an uplink.
+Until 2026-08-28 it lived inside `overview.js` and had no automated test: the
+only way to check it was to look at the settings screen in a browser. That is
+how the following bug survived, and how it was eventually found.
+
+**The bug.** This package deliberately does not grant `uci read` on `network`,
+because that file holds PPPoE passwords and WireGuard private keys, and a user
+an administrator restricted to failover settings could otherwise read every one
+of them (section 7). LuCI's `Network` object reads the protocol and the device
+from exactly that file. So on a genuinely restricted session:
+
+```
+wan:    up
+wan6:   down [never seen up: cannot tell]     <- offered, and unusable
+wanb:   down [never seen up: cannot tell]
+wanusb: down [never seen up: cannot tell]
+```
+
+Every label lost its protocol and device, which are the two facts that let
+someone with six interfaces pick the right one. Worse, the filter that hides
+IPv6-only interfaces read `getProtocol() !== 'dhcpv6'`, which is TRUE when the
+protocol is merely unavailable. It failed OPEN, and `wan6` was offered as a
+candidate uplink. Choosing it generates a configuration that cannot work.
+
+**A comment in the source asserted this could not happen.** It said LuCI's
+`enumerateNetworks()` falls back to the netifd dump and supplies the protocol
+anyway, and that this had been "verified on hardware". It had been, as root,
+where the fallback is never exercised because root can read the file directly.
+The comment is preserved in `overview.js` as a note about being wrong, because
+the failure mode is more instructive than the fix.
+
+**The fix costs nothing.** `n._ubus('proto')` reads netifd's own dump, which
+LuCI has already fetched for other reasons and which the ACL does grant. It is
+how LuCI's own `isUp()` works, which is the clue that was there all along:
+`isUp()` kept working on a restricted session while `getProtocol()` did not. No
+extra RPC call, no new permission, no credentials exposed.
+
+**The classifier now lives in `generator.js`** as a pure function of
+`(networks, chosen, showAll)`, because that module is already loaded and
+exercised under Node by `tests/luci-module.js`. Twenty-three checks cover the
+roles, the labels, eligibility, the forced-full-list rules, and both sessions:
+one fixture supplies only what netifd exposes, the other adds uci data.
+
+### 13.1 Why a browser was the wrong place to verify this
+
+LuCI serves its JavaScript under a `?v=` token derived from the LuCI version,
+not from the file. Reinstalling a package does not change it, so a browser keeps
+running the old copy and a fix cannot be told apart from a caching artifact.
+Two browsers were burned chasing that during this work, and a change was briefly
+reverted on the strength of a cache rather than a defect.
+
+Two consequences worth keeping:
+
+- **Logic belongs in a module Node can load.** That is the whole reason the
+  classifier moved.
+- **After upgrading a LuCI app, hard-refresh before judging anything.** This
+  applies to users as much as to developers, and the install guide now says so.

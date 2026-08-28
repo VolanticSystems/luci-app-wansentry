@@ -211,14 +211,14 @@ are named, and nothing is generated:
 
 ## Tests
 
-Three suites, 120 checks, no failures. Nothing reimplements the logic it tests:
+Three suites, 143 checks, no failures. Nothing reimplements the logic it tests:
 an earlier suite kept its own copy of the ownership arithmetic and every one of
 those checks passed against a reconciler that was known to be broken, because
 the copy was right when the shipped code was not.
 
 | suite | checks | what it does |
 |---|---|---|
-| `tests/generator-suite.js` | 54 | loads the real browser module under Node and classifies the same configurations the shell suite drives, plus the pbr exclusion logic. Needs no router; runs on every push. |
+| `tests/generator-suite.js` | 80 | loads the real browser module under Node and classifies the same configurations the shell suite drives, plus the pbr exclusion logic. Needs no router; runs on every push. |
 | `tests/ownership-suite.sh` | 29 | drives the installed init script on a sandbox router, with configurations chosen because the two halves of the ownership rule *could* read them differently. |
 | `tests/hardware-suite.sh` | 37 | the ownership gate, arming, reconciler restart discipline, the security cases, pbr coexistence and the switchover hooks. |
 

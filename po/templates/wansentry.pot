@@ -17,9 +17,9 @@ msgstr ""
 msgid "%s · carrying traffic"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:516
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:541
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:546
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:411
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:436
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:441
 msgid "-- please select --"
 msgstr ""
 
@@ -27,27 +27,27 @@ msgstr ""
 msgid "/etc/config/mwan3 contains sections wansentry did not create. Rather than merge with a configuration somebody wrote by hand, wansentry refuses to write anything at all and leaves this screen read-only."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:505
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:665
 msgid "At least one health-check host is required."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:544
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:439
 msgid "Backup interface"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:556
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:451
 msgid "Check interval"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:648
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:543
 msgid "Complete the settings above to see the configuration this screen will generate."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:563
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:458
 msgid "Consecutive failed checks before an uplink is declared offline. Interval × threshold is your worst-case detection time."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:569
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:464
 msgid "Consecutive successful checks before an uplink is declared online again. Keep this higher than the failure threshold; flapping back onto a shaky primary is worse than staying on a working backup a little longer."
 msgstr ""
 
@@ -55,7 +55,7 @@ msgstr ""
 msgid "DNS can still be answered through the dead uplink"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:488
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:383
 msgid "Enable failover"
 msgstr ""
 
@@ -63,11 +63,11 @@ msgstr ""
 msgid "Failover is switched off"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:602
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:497
 msgid "Failover status"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:562
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:457
 msgid "Failure threshold"
 msgstr ""
 
@@ -75,11 +75,11 @@ msgstr ""
 msgid "Flow offloading blunts the conntrack flush"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:578
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:473
 msgid "Flush connection tracking on switchover"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:494
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:389
 msgid "Forced on: either fewer than two interfaces look like uplinks, or a saved selection is one this screen would not offer. Everything is listed so nothing you have already chosen can become unselectable."
 msgstr ""
 
@@ -87,7 +87,7 @@ msgstr ""
 msgid "Foreign sections:"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:608
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:503
 msgid "Generated mwan3 configuration"
 msgstr ""
 
@@ -95,7 +95,7 @@ msgstr ""
 msgid "Grant access to dual-WAN failover configuration. Read on 'pbr' is required to generate the mwan3 exclusion rules that keep policy-based routing working across a failover; that file holds policy names, addresses and interface names, and no credentials. Read on 'network' is deliberately NOT granted: it holds PPPoE and WireGuard secrets."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:549
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:444
 msgid "Health-check hosts"
 msgstr ""
 
@@ -111,7 +111,7 @@ msgstr ""
 msgid "In this state"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:502
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:662
 msgid "Interface names may use only letters, digits and underscore, and may not begin with \"wansentry_\"."
 msgstr ""
 
@@ -147,19 +147,19 @@ msgstr ""
 msgid "No uplink transitions recorded yet. mwan3 logs one line per online/offline change."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:495
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:390
 msgid "Off: only interfaces with their own route off this router are offered. On: every interface is listed, each labelled with why it is not normally offered. Classification uses protocol, device and gateway rather than the interface name, and it can be wrong: an ISP that delivers the uplink over a tunnel looks exactly like a VPN from here. Turn this on if your uplink is missing."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:489
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:384
 msgid "Off: the generated mwan3 interfaces are written with tracking disabled and the mwan3 service is stopped and disabled, so this router routes exactly as it did before. On: mwan3 is enabled and started with the configuration below."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:575
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:470
 msgid "On: as soon as the primary passes its recovery threshold, traffic moves back to it. Off: sets mwan3 stickiness, an ipset keyed on source IP. A client that failed over keeps using the backup for up to 10 minutes after its last matching packet; other clients follow the policy back to the primary immediately. It is source-IP stickiness, not per-connection, and mwan3 cannot latch permanently onto the backup, so \"off\" softens the failback rather than preventing it."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:481
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:376
 msgid "One primary uplink, one backup, and a health check that decides between them. Applying this screen generates a complete minimal mwan3 configuration. Both uplinks must already exist as working network interfaces; wansentry steers between them, it does not create them."
 msgstr ""
 
@@ -167,7 +167,7 @@ msgstr ""
 msgid "Pick an interface below."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:550
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:445
 msgid "Pinged through each uplink's own routing table. Use two hosts on different operators: the generated config marks an uplink up when any one of them answers, so a single ICMP-hostile target cannot cause a phantom outage."
 msgstr ""
 
@@ -175,7 +175,7 @@ msgstr ""
 msgid "Policy-based routing detected"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:539
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:434
 msgid "Primary interface"
 msgstr ""
 
@@ -187,23 +187,23 @@ msgstr ""
 msgid "Recent uplink transitions"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:579
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:474
 msgid "Recommended. When an uplink changes state the kernel still holds conntrack entries pinned to the old gateway, and TCP treats the resulting ICMP unreachables as a soft error, so clients retransmit into a dead path for minutes instead of reconnecting. Flushing forces every connection to be re-established over the surviving uplink. The cost is that connections on the healthy uplink are dropped too, because mwan3's flush is global rather than per-uplink."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:568
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:463
 msgid "Recovery threshold"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:700
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:595
 msgid "Refusing to save: /etc/config/mwan3 contains configuration wansentry did not create."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:690
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:585
 msgid "Refusing to save: /etc/config/mwan3 could not be read, so wansentry cannot tell whether it would be overwriting configuration it did not create."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:531
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:691
 msgid "Refusing to write: /etc/config/mwan3 contains configuration wansentry did not create."
 msgstr ""
 
@@ -211,7 +211,7 @@ msgstr ""
 msgid "Remove them (or reset mwan3 to its packaged defaults) to let wansentry take over. This banner also appears if a newer mwan3 release ships defaults wansentry does not recognise; refusing is the safe direction."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:574
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:469
 msgid "Return to primary when it recovers"
 msgstr ""
 
@@ -219,15 +219,15 @@ msgstr ""
 msgid "Score / lost"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:557
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:452
 msgid "Seconds between probes."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:496
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:656
 msgid "Select a primary and a backup interface first."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:492
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:387
 msgid "Show every interface"
 msgstr ""
 
@@ -243,7 +243,7 @@ msgstr ""
 msgid "The generated mwan3 interfaces are written with tracking disabled and the mwan3 service is stopped and disabled on apply, so routing behaves exactly as it did before wansentry was installed. Turn on \"Enable failover\" below to arm it."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:499
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:659
 msgid "The primary and the backup interface must be different."
 msgstr ""
 
@@ -251,7 +251,7 @@ msgstr ""
 msgid "The system log could not be read. Grant the luci-app-wansentry ACL or check that logd is running."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:540
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:435
 msgid "The uplink traffic uses whenever its health check passes."
 msgstr ""
 
@@ -275,11 +275,11 @@ msgstr ""
 msgid "Traffic is going out over %s."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:545
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:440
 msgid "Used only while the primary is down. It must be a working netifd interface with its own gateway. wansentry does not create interfaces, it only steers between them."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:419
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:434
 msgid "VPN tunnel: runs over an uplink, cannot be one"
 msgstr ""
 
@@ -287,7 +287,7 @@ msgstr ""
 msgid "WAN Failover"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:480
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:375
 msgid "WAN failover"
 msgstr ""
 
@@ -303,11 +303,11 @@ msgstr ""
 msgid "dnsmasq merges the resolvers learned from every interface that is up into one runtime resolv file and picks between them without regard to failover state. After a switchover, name resolution can still be attempted through the uplink that just died, so the network looks broken even though routing is correct. mwan3 does not solve this either; wansentry does not pretend to."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:443
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:458
 msgid "down"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:420
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:435
 msgid "local network: no gateway of its own"
 msgstr ""
 
@@ -323,7 +323,7 @@ msgstr ""
 msgid "mwan3 is not answering on ubus. It is stopped, or rpcd has not loaded its plugin."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:421
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:436
 msgid "never seen up: cannot tell"
 msgstr ""
 
@@ -343,7 +343,7 @@ msgstr ""
 msgid "primary"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:603
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:498
 msgid "refreshed every %d s"
 msgstr ""
 
@@ -351,7 +351,7 @@ msgstr ""
 msgid "tracking disabled"
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:443
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/generator.js:458
 msgid "up"
 msgstr ""
 
@@ -363,6 +363,6 @@ msgstr ""
 msgid "wansentry generates mwan3 configuration; it does not replace it. This usually means the mwan3 package is not installed (install it and reload the page); if it is installed, its configuration could not be read just now, so reload and try again."
 msgstr ""
 
-#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:609
+#: applications/luci-app-wansentry/htdocs/luci-static/resources/view/wansentry/overview.js:504
 msgid "written to /etc/config/mwan3 on apply"
 msgstr ""

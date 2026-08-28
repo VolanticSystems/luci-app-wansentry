@@ -587,6 +587,196 @@ head('TRACK OPTIONS: the opinions that are not mwan3 defaults');
 	    'default', pol && pol.options.last_resort);
 }
 
+const clsGen = genPbr('');
+
+head('INTERFACE CLASSIFIER: roles, labels, and the restricted-ACL case');
+
+// WHY THIS GROUP EXISTS. The classifier decides which interfaces a user may
+// pick as an uplink, and until now it was the only significant logic in this
+// package with no automated test. It was checked by looking at it in a browser,
+// as root, and a real bug survived that:
+//
+//   loaded as a genuinely RESTRICTED user, getProtocol() returns empty for
+//   every interface, because this package deliberately does not grant uci read
+//   on `network` (PPPoE passwords and WireGuard private keys live there). Every
+//   label lost its protocol and device, and the filter meant to hide IPv6-only
+//   interfaces failed OPEN and offered wan6 as a candidate uplink.
+//
+// A comment in the source asserted this could not happen, on the grounds that
+// LuCI falls back to the netifd dump. It said "verified on hardware", and it
+// had been, as root, where the fallback is never exercised.
+//
+// So these fixtures model BOTH sessions. `full` has uci data; `restricted` has
+// only what netifd exposes through _ubus(), which is what the ACL grants.
+
+// A fake LuCI Network object. Only the accessors the classifier uses.
+//   uciProto/uciDev  what getProtocol()/getDevice() return (empty when the
+//                    session may not read /etc/config/network)
+//   ubus             what _ubus(key) returns, i.e. netifd's own view
+function iface(name, opts) {
+	const o = opts || {};
+	return {
+		getName: () => name,
+		getProtocol: () => o.uciProto || '',
+		getDevice: () => (o.uciDev ? { getName: () => o.uciDev } : null),
+		isUp: () => !!o.up,
+		getGatewayAddr: () => o.gw || null,
+		_ubus: (k) => (o.ubus || {})[k] ?? null
+	};
+}
+
+// The reference router, as a RESTRICTED session sees it: netifd only.
+const RESTRICTED = [
+	iface('lan',    { up: true,  ubus: { proto: 'static',    device: 'br-lan' } }),
+	iface('wan',    { up: true,  gw: '192.168.1.1',
+	                  ubus: { proto: 'dhcp',      device: 'eth1' } }),
+	iface('wan6',   { up: false, ubus: { proto: 'dhcpv6',    device: 'eth1' } }),
+	iface('wanb',   { up: false, ubus: { proto: 'dhcp',      device: 'eth2' } }),
+	iface('vpnusa', { up: true,  gw: '10.38.0.1',
+	                  ubus: { proto: 'none',      device: 'tun0' } }),
+	iface('wwan',   { up: true,  gw: '192.168.178.1',
+	                  ubus: { proto: 'dhcp',      device: 'phy1-sta0' } })
+];
+
+// The same router as ROOT sees it: uci data present as well.
+const FULL = RESTRICTED.map((n) => n);   // superset behaviour asserted below
+
+const clsRoles = (r) => r.all.reduce((m, c) => (m[c.name] = c.role, m), {});
+const clsNames = (r) => r.choices.map((c) => c[0]);
+
+// THE BUG, asserted directly. wan6 is dhcpv6 and must never be offered.
+//
+// SABOTAGE: in generator.js ifProto(), drop the _ubus() half and return only
+// n.getProtocol(). wan6 reappears in the list and this goes red. That is the
+// exact defect, and no other check in this suite notices it.
+{
+	const r = clsGen.classify(RESTRICTED, [ '', '' ], true);
+
+	chk('an IPv6-only interface is never offered, even with no uci access',
+	    false, clsNames(r).indexOf('wan6') >= 0);
+	chk('and it is absent from the classification entirely',
+	    undefined, clsRoles(r).wan6);
+}
+
+// Roles, from evidence rather than names.
+//
+// SABOTAGE: remove the tun/tap/wg device test in roleOf(). vpnusa is `proto
+// none` over tun0, so the protocol test alone cannot catch it, and it becomes
+// an offered uplink.
+{
+	const r = clsGen.classify(RESTRICTED, [ '', '' ], true);
+	const R = clsRoles(r);
+
+	chk('a plain uplink with a gateway is an uplink', 'uplink', R.wan);
+	chk('a second one likewise',                      'uplink', R.wwan);
+	chk('a tun device is a tunnel however it is configured', 'tunnel', R.vpnusa);
+	chk('a bridge with no gateway is local',          'local',  R.lan);
+	chk('an interface never seen up is unknown',      'unknown', R.wanb);
+}
+
+// Eligibility. `unknown` is offered ON PURPOSE: it is the LTE stick that is not
+// plugged in, and hiding it would make the classifier's mistakes into the
+// user's dead end.
+//
+// SABOTAGE: drop 'unknown' from the eligible filter. wanb disappears and this
+// goes red.
+{
+	const r = clsGen.classify(RESTRICTED, [ '', '' ], false);
+
+	chk('only uplinks and unknowns are offered by default',
+	    [ 'wan', 'wanb', 'wwan' ], clsNames(r).sort());
+	chk('a tunnel is not offered', false, clsNames(r).indexOf('vpnusa') >= 0);
+	chk('a local network is not offered', false, clsNames(r).indexOf('lan') >= 0);
+}
+
+// THE LABELS. Protocol and device are what let someone with six interfaces pick
+// the right one, and they are exactly what was lost on a restricted session.
+//
+// SABOTAGE: drop the _ubus() half of ifDevice(). The device disappears from
+// every label and this goes red.
+{
+	const r = clsGen.classify(RESTRICTED, [ '', '' ], true);
+	const byName = r.all.reduce((m, c) => (m[c.name] = c.label, m), {});
+
+	chk('a label carries name, protocol, device and state',
+	    'wan: dhcp, eth1, up', byName.wan);
+	chk('an ineligible interface says why',
+	    'vpnusa: none, tun0, up [VPN tunnel: runs over an uplink, cannot be one]',
+	    byName.vpnusa);
+	chk('a down interface reads down', true, /, down\b/.test(byName.wanb));
+}
+
+// A label must never render a dangling separator because one input was
+// unavailable. This is the "wan: , wan, up" defect, found on a live router.
+//
+// SABOTAGE: remove the .filter() that drops empty parts in classify().
+{
+	const r = clsGen.classify([ iface('bare', { up: true, gw: '1.1.1.1' }) ], [ '', '' ], true);
+
+	chk('an interface with no protocol or device still labels cleanly',
+	    'bare: up', r.all[0].label);
+}
+
+// A SAVED SELECTION MUST NEVER BECOME UNSELECTABLE. Narrowing the list out from
+// under a stored value would blank the field on the next save.
+//
+// SABOTAGE: remove the `picked.indexOf(...)` clause from forceAll.
+{
+	const r = clsGen.classify(RESTRICTED, [ 'vpnusa', 'wan' ], false);
+
+	chk('choosing an ineligible interface forces the full list', true, r.forceAll);
+	chk('and that selection is still offered', true, clsNames(r).indexOf('vpnusa') >= 0);
+}
+
+// Fewer than two plausible uplinks also forces the full list, so a user is
+// never left with nothing to pick.
+//
+// SABOTAGE: remove the `eligible.length < 2` clause.
+{
+	const r = clsGen.classify([ RESTRICTED[0], RESTRICTED[1], RESTRICTED[4] ], [ '', '' ], false);
+
+	chk('one eligible interface forces the full list', true, r.forceAll);
+	chk('so the user still sees something to choose', true, r.choices.length > 1);
+}
+
+// Graceful degradation: no netifd data AND no uci data. Everything is unknown,
+// nothing is wrongly excluded, and the screen still offers a choice.
+//
+// SABOTAGE: make ifProto() throw on a missing _ubus rather than guarding with
+// typeof. This group throws instead of failing, which is louder still.
+{
+	const bare = [ iface('a', {}), iface('b', {}) ];
+	const r = clsGen.classify(bare, [ '', '' ], false);
+
+	chk('with no data at all, both are unknown rather than excluded',
+	    [ 'unknown', 'unknown' ], r.all.map((c) => c.role));
+	chk('and both remain choosable', [ 'a', 'b' ], clsNames(r).sort());
+}
+
+// uci data is used when netifd has none, so a router where the session CAN read
+// /etc/config/network behaves exactly as before.
+//
+// SABOTAGE: reverse the precedence in ifProto() so uci wins over netifd. This
+// stays green, but the restricted-session checks above go red, which is the
+// distinction that matters.
+{
+	const uciOnly = [ iface('wan', { up: true, gw: '1.1.1.1',
+	                                 uciProto: 'pppoe', uciDev: 'eth0.2' }) ];
+	const r = clsGen.classify(uciOnly, [ '', '' ], true);
+
+	chk('uci values are used when netifd has none',
+	    'wan: pppoe, eth0.2, up', r.all[0].label);
+	chk('and the role is still decided correctly', 'uplink', r.all[0].role);
+}
+
+// loopback is never a candidate.
+{
+	const r = clsGen.classify([ iface('loopback', { up: true, gw: '127.0.0.1' }),
+	                         RESTRICTED[1] ], [ '', '' ], true);
+
+	chk('loopback is excluded', false, clsNames(r).indexOf('loopback') >= 0);
+}
+
 head('THE STRING CATALOGUE COVERS WHAT THE CODE ASKS FOR');
 
 // Every string _() was called with during this whole run must be in the .pot.
