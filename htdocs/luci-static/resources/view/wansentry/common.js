@@ -7,7 +7,7 @@
 'require fs';
 
 /*
- * wansentry — shared frontend helpers.
+ * wansentry, shared frontend helpers.
  *
  * Everything both the status panel and the settings form need that is not
  * mwan3 config generation: the ubus bindings, the log reader, the CSS and a

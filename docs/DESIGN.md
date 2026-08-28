@@ -181,7 +181,7 @@ For primary `P` and backup `B`:
         option wansentry '1'
         option enabled '1'          # '0' when the master toggle is off
         option family 'ipv4'
-        option initial_state 'online'
+        option initial_state 'offline'   # NOT mwan3's default; see 12
         option track_method 'ping'
         list   track_ip <each health-check host>
         option reliability '1'
@@ -857,3 +857,60 @@ Stated plainly so nobody mistakes silence for coverage:
   the reference router, and this package generates IPv4 policy only.
 - More than one pbr policy set overlapping in ways that produce contradictory
   exclusions.
+
+## 12. Why a returning uplink is not trusted
+
+`trackOptions()` generates `initial_state 'offline'`, against mwan3's own
+default of `online`. That is a deliberate deviation from upstream and it needs
+the justification this section gives.
+
+**The case that exposes it.** Pull a cable and the link and the service behind
+it return at the same instant, so `online` looks correct. Power-cycle a modem
+and they do not: ethernet carrier is back in a second or two, the internet
+behind it takes another twenty to sixty. During that window the router holds a
+link it cannot use, and `online` tells mwan3 to assume it is good.
+
+Measured on the bench, 2026-08-28. Upstream blackholed, interface taken down,
+then brought back up with the blackhole still in place. The oracle is a LAN
+client in a network namespace, outside any pbr range, so it follows mwan3:
+
+```
+initial_state online
+  09:50:15  act=wwan  wan=disabled        client OK
+  09:50:23  act=wan   wan=disconnecting   client BROKEN     second outage
+  09:50:32  act=wwan  wan=offline         client OK
+
+initial_state offline
+  09:55:02  act=wwan  wan=disabled        client OK
+  09:55:04  act=wwan  wan=offline         client OK
+  09:55:14  act=wwan  wan=offline         client OK         never moved back
+```
+
+With `online` the traffic is handed back to an uplink that cannot carry it and
+stays there until the probes fail again, another `down` x `interval`, on top of
+the outage the user has already had.
+
+**The objection, and why it does not hold.** `offline` sounds like it should
+cost a slow start after a reboot, with no uplink usable until probes have run.
+It does not, because the generated policy carries `last_resort 'default'`: until
+an uplink has proved itself, traffic falls through to the main routing table,
+which uses the lowest-metric default route. Measured across an mwan3 restart, a
+LAN client stayed reachable throughout apart from the single second the restart
+itself costs, which is identical under either setting.
+
+`tests/generator-suite.js` asserts both halves, the setting and the
+`last_resort default` that makes it safe, because the second is the premise of
+the first.
+
+**A residual on link restore is not this setting.** A client may still lose a
+few seconds when the primary's link returns. That is `flush_conntrack` firing on
+the `ifup` event and clearing the table globally; mwan3's flush is not
+per-uplink, so connections on the healthy backup are dropped too. The settings
+screen already names that as the price of flushing at all.
+
+**Why this was not found sooner.** Every failover test anyone runs, including
+the live one on the reference router, pulls a cable. That exercises only the
+fast path, where link and service return together, and it passes. The defect
+lives in the case a cable pull cannot produce. Operator-facing version of the
+same material, with the commands to reproduce it:
+[VPN-AND-POLICY-ROUTING.md](VPN-AND-POLICY-ROUTING.md) section 8.

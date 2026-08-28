@@ -10,8 +10,8 @@ number appears it was measured, on OpenWrt 25.12.5 with mwan3 2.12.0-r3,
 pbr 1.2.2-r20 and openvpn-openssl 2.7.6, on 27 August 2026. Where something was
 not measured, this page says so rather than rounding it up to a claim.
 
-**Do not take the numbers on trust.** Section 7 is a set of commands that
-measure your own router, and it is the most useful part of this page.
+**Do not take the numbers on trust.** Sections 7 and 8.4 are commands that
+measure your own router, and they are the most useful part of this page.
 
 ---
 
@@ -379,7 +379,118 @@ ping -c3 -I tun0 <the other end of your tunnel>
 
 ---
 
-## 8. What is not covered here
+## 8. How long a failover actually takes, and why your test may mislead you
+
+There are **two different detection paths** and they differ by an order of
+magnitude. Every number below was measured, half of it on a bench and half on a
+live production router.
+
+### 8.1 Link loss: about one second
+
+Pull a cable, power off a modem, unplug a tethered phone. The kernel loses
+carrier, netifd takes the interface down, and mwan3 marks it `disabled`
+immediately. No probing is involved, so the check interval does not apply.
+
+Measured on a live router, primary cable pulled:
+
+```
+11:39:12  act=wan     wan=online    tunnel=LOSS
+11:39:13  act=wanusb  wan=disabled  tunnel=120.870 ms
+```
+
+One lost packet. Restoring the cable moved it back in two seconds.
+
+### 8.2 Upstream failure with the link intact: interval x threshold
+
+The link stays up and the service behind it dies. Your modem still has a light
+on, your router still has a route, and nothing works. This is what most ISP
+outages look like, and it is the case the check interval is for.
+
+Detection is `interval` x `down`, so the generated defaults give:
+
+| interval | down | worst case |
+|---|---|---|
+| 5 (default) | 3 | 15 s |
+| 3 (suggested with a VPN) | 3 | 9 s |
+
+Measured on the bench with the upstream blackholed: about ten seconds at
+interval 3, which is that arithmetic plus a probe already in flight.
+
+### 8.3 Why the obvious test is the misleading one
+
+**Pulling a cable exercises only 9.1**, the fast path, and it is what everybody
+reaches for. It tells you the wiring is right and it tells you almost nothing
+about how your router behaves in a real outage.
+
+Worse, a cable pull cannot reproduce the case that hurts most, because the link
+and the service come back at the same instant. A modem does not behave that way:
+carrier returns in a second or two and the internet behind it takes another
+twenty to sixty. During that window the router has a link it cannot use.
+
+mwan3's own `initial_state` default of `online` tells it to assume a returning
+interface is good. Measured on the bench, with the link restored and the
+upstream still dead:
+
+```
+initial_state online
+  09:50:15  act=wwan  wan=disabled        client OK
+  09:50:23  act=wan   wan=disconnecting   client BROKEN     <- second outage
+  09:50:32  act=wwan  wan=offline         client OK
+
+initial_state offline
+  09:55:02  act=wwan  wan=disabled        client OK
+  09:55:04  act=wwan  wan=offline         client OK
+  09:55:14  act=wwan  wan=offline         client OK         <- never moved back
+```
+
+So traffic is handed back to an uplink that cannot carry it, and stays there
+until the probes fail again: another `down` x `interval`, about nine seconds,
+on top of the outage the user has already had.
+
+**wansentry generates `initial_state offline` for this reason.** The cost people
+expect, a slow start after a reboot, does not happen: the generated policy
+carries `last_resort default`, so until an uplink has proved itself traffic falls
+through to the main routing table. Measured across an mwan3 restart, a LAN client
+stayed reachable throughout apart from the single second the restart itself
+costs, which is identical either way.
+
+### 8.4 Test both paths
+
+To exercise the slow path without unplugging anything, blackhole the upstream
+and leave the link up:
+
+```
+nft add table inet failtest
+nft add chain inet failtest out '{ type filter hook postrouting priority 300; policy accept; }'
+nft add rule inet failtest out oifname "wan" drop
+```
+
+and to end the test:
+
+```
+nft delete table inet failtest
+```
+
+Substitute your own primary's device name for `wan`. This is the closest thing
+to a real ISP outage you can arrange from the router itself, and unlike a cable
+pull it leaves carrier up, which is the whole point.
+
+To go further and reproduce the modem reboot, blackhole the upstream first, then
+take the interface down and bring it back up while the blackhole is still in
+place. That sequence is what produced the measurements in 8.3.
+
+### 8.5 A residual you will see either way
+
+On link restore a LAN client may lose a few seconds even when routing is
+correct. That is `flush_conntrack` firing on the `ifup` event and clearing the
+table globally, not a routing fault. mwan3's flush is not per-uplink, so
+connections on the healthy backup are dropped too. The settings screen names
+this as the price of flushing at all; turn `flush_conntrack` off if you would
+rather keep stale entries than pay it.
+
+---
+
+## 9. What is not covered here
 
 Stated plainly so silence is not mistaken for coverage.
 
@@ -397,6 +508,6 @@ Stated plainly so silence is not mistaken for coverage.
 - **Policy routing packages other than pbr.** The mechanism generalises, the
   detection does not: wansentry reads pbr's configuration specifically.
 
-If you measure any of these, the commands in section 7 are the ones that
+If you measure any of these, the commands in sections 7 and 8.4 are the ones that
 produced the numbers on this page, and a report against them is worth more than
 an opinion.

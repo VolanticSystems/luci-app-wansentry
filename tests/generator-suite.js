@@ -550,6 +550,43 @@ const mkSettings = (gen) => gen.normalize({
 	    true, rules.length > 0 && rules.every((r) => /^wansentry_/.test(r.name)));
 }
 
+head('TRACK OPTIONS: the opinions that are not mwan3 defaults');
+
+// initial_state is deliberately 'offline', against mwan3's own default of
+// 'online'. Measured on the bench 2026-08-28 with the modem-reboot scenario:
+// link returns before the service behind it does.
+//
+//   online   -> mwan3 assumes the returning uplink is good, moves traffic back
+//               to an uplink that cannot carry it, client BROKEN for ~9 s
+//   offline  -> stays on the backup until probes prove the primary, no outage
+//
+// A cable pull does NOT expose this, because the link and the internet come
+// back together. That is why the live cable-pull test passed and this still
+// needed finding.
+//
+// SABOTAGE: set initial_state back to 'online' in trackOptions(). This goes red
+// and nothing else does, which is the point: no other check in this suite
+// notices, and neither did a real failover test on real hardware.
+{
+	const gen = genPbr('');
+	const want = gen.desired(mkSettings(gen));
+	const ifaces = want.filter((x) => x.type === 'interface');
+
+	chk('both uplink sections are generated', 2, ifaces.length);
+	chk('initial_state is offline on every uplink, not mwan3 default online',
+	    true, ifaces.length > 0 && ifaces.every((i) => i.options.initial_state === 'offline'));
+
+	// The reason offline is safe rather than merely cautious: the policy falls
+	// through to the main routing table until an uplink proves itself. Without
+	// last_resort default, offline would mean no route at all after a reboot.
+	//
+	// SABOTAGE: change last_resort to 'blackhole' or drop it. This goes red,
+	// and it should, because it invalidates the argument for offline.
+	const pol = want.filter((x) => x.type === 'policy')[0];
+	chk('last_resort default is what makes initial_state offline safe',
+	    'default', pol && pol.options.last_resort);
+}
+
 head('THE STRING CATALOGUE COVERS WHAT THE CODE ASKS FOR');
 
 // Every string _() was called with during this whole run must be in the .pot.
