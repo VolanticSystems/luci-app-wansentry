@@ -802,6 +802,56 @@ if (seen.size === 0) {
 		    + JSON.stringify(missing.slice(0, 5)));
 }
 
+head('READ-ONLY SCREEN: no control may opt itself back in');
+
+// THE DEFECT, found 2026-09-01. overview.js sets `m.readonly = blocked` on the
+// Map when mwan3 holds foreign config, which is what makes the whole screen
+// go read-only and what the banner above it promises. One option then did:
+//
+//     o.readonly = forceAll;
+//
+// LuCI resolves a widget's readonly state from the OPTION first and falls back
+// to the Map only when the option leaves it undefined. So on a blocked screen
+// with forceAll false, that line wrote `false` and re-enabled the control the
+// Map had just locked. It wrote nothing to disk, so the ownership guarantee
+// held, but it contradicted the screen's own claim, and that claim is the only
+// reason an operator trusts the banner.
+//
+// ASSERTED ON THE SOURCE, DELIBERATELY. Rendering the real form needs stubs for
+// form.Map, every widget type, uci and rpc, which is heavy and brittle enough
+// that the test would rot. More importantly the bug is a CLASS, not one line:
+// any future option that assigns its own readonly reintroduces it. Scanning
+// every assignment catches the next one too, which a fixture for this single
+// control would not.
+//
+// SABOTAGE: change it back to `o.readonly = forceAll;`. This goes red and names
+// the expression.
+const OVERVIEW = path.join(ROOT, 'htdocs/luci-static/resources/view/wansentry/overview.js');
+const ovSrc = require('fs').readFileSync(OVERVIEW, 'utf8');
+
+// The Map-level lock must still exist. Without it there is nothing for the
+// options to honour and every check below would pass vacuously.
+if (/\bm\.readonly\s*=\s*blocked\s*;/.test(ovSrc))
+	ok('the form itself is still locked when foreign config is present');
+else
+	bad('m.readonly = blocked is GONE from overview.js, so nothing below proves anything');
+
+const roAssigns = [...ovSrc.matchAll(/^\s*[a-z]\w*\.readonly\s*=\s*([^;]+);/gm)]
+	.map((m) => m[1].trim())
+	.filter((expr) => expr !== 'blocked');
+
+const optOut = roAssigns.filter((expr) => !/\bblocked\b/.test(expr));
+
+if (roAssigns.length === 0) {
+	bad('found no per-option readonly assignments at all; the scan matched nothing');
+} else if (optOut.length === 0) {
+	ok(`all ${roAssigns.length} per-option readonly assignment(s) honour \`blocked\``);
+} else {
+	bad(`${optOut.length} control(s) can re-enable themselves on a read-only screen: `
+	    + JSON.stringify(optOut));
+}
+
+
 console.log('\n----------------------------------------');
 console.log(`passed ${PASS}, failed ${FAIL}`);
 process.exit(FAIL);

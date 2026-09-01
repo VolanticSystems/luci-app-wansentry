@@ -974,3 +974,43 @@ Two consequences worth keeping:
   classifier moved.
 - **After upgrading a LuCI app, hard-refresh before judging anything.** This
   applies to users as much as to developers, and the install guide now says so.
+
+## 14. The read-only screen, and the control that opted itself back in
+
+Fixed in 1.1.1.
+
+When mwan3 holds configuration wansentry did not write, the screen refuses to
+edit anything and says so in a banner. That refusal is the package's central
+promise: wansentry owns its own sections and will not touch a hand-built
+config. `overview.js` implements it with one line on the form:
+
+    m.readonly = blocked;
+
+**One option then undid it for itself.** The "Show every interface" toggle
+carried its own state, forced on when too few interfaces look like uplinks, and
+assigned it unconditionally:
+
+    o.readonly = forceAll;
+
+LuCI resolves a widget's readonly state from the option first and only falls
+back to the Map when the option leaves it undefined. So on a blocked screen
+with `forceAll` false, that line wrote `false` and re-enabled the one control
+the Map had just locked.
+
+**Nothing was ever at risk.** The toggle changes which interfaces the dropdowns
+list; it writes no mwan3 section, and the save path is blocked separately. The
+ownership guarantee held throughout. What broke was the screen's own claim that
+every input is disabled, and that claim is the entire reason an operator trusts
+the banner rather than checking `/etc/config/mwan3` by hand.
+
+The fix is `o.readonly = forceAll || blocked`. The test is deliberately an
+invariant over the source rather than a fixture for this one control: it finds
+every per-option `readonly` assignment in `overview.js` and fails any that does
+not honour `blocked`, because the defect is a class and the next option to
+carry its own state would reintroduce it. It is guarded by a check that the
+Map-level lock still exists, so the scan cannot pass vacuously against a screen
+that has stopped locking anything at all.
+
+This is also the first test of any kind against `overview.js`, which until now
+had none.
+
