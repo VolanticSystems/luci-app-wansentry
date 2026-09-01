@@ -389,7 +389,20 @@ return view.extend({
 				? _('Forced on: either fewer than two interfaces look like uplinks, or a saved selection is one this screen would not offer. Everything is listed so nothing you have already chosen can become unselectable.')
 				: _('Off: only interfaces with their own route off this router are offered. On: every interface is listed, each labelled with why it is not normally offered. Classification uses protocol, device and gateway rather than the interface name, and it can be wrong: an ISP that delivers the uplink over a tunnel looks exactly like a VPN from here. Turn this on if your uplink is missing.'));
 		o.rmempty = false;
-		o.readonly = forceAll;
+
+		/* `|| blocked`, and the assignment is the whole reason this comment
+		 * exists. LuCI resolves a widget's readonly state from the option
+		 * first and falls back to the Map only when the option leaves it
+		 * undefined, so assigning `forceAll` alone WRITES FALSE when the
+		 * screen is blocked, overriding `m.readonly = blocked` set above and
+		 * leaving this one control live on a read-only screen.
+		 *
+		 * It writes nothing on its own, so the ownership guarantee held, but
+		 * it contradicted the screen's own claim that every input is disabled
+		 * when foreign mwan3 config is present, and that claim is the reason
+		 * an operator trusts the banner. Any option that sets its own readonly
+		 * has to carry `|| blocked` for the same reason. */
+		o.readonly = forceAll || blocked;
 
 		/* Rebuild both dropdowns in place when the toggle flips, so the effect
 		 * is immediate rather than waiting for a save and a reload. Every step
