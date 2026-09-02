@@ -35,6 +35,36 @@ to measure your own router rather than trust the numbers in it.
 > clean two-WAN rig, because a clean rig cannot reproduce any of it. See *Known limitations* for what remains, chiefly that this
 > is IPv4 only and does not solve DNS.
 
+## Install
+
+One file, every device. The package is `noarch`, and the same `.apk` is
+verified installing on both aarch64 and arm_cortex-a15 hardware.
+
+    wget https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.1.1/luci-app-wansentry-1.1.1-r1.apk
+    apk add --allow-untrusted ./luci-app-wansentry-1.1.1-r1.apk
+
+Needs OpenWrt 25.12 or newer and `mwan3`. Both uplinks must already exist as
+working network interfaces. `--allow-untrusted` is required because this is not
+signed by the OpenWrt build key.
+
+Prefer to build it yourself? See *Building from source* below.
+
+## Screenshots
+
+The settings screen, taken on a bench router with `pbr` installed and three
+policies present. Top to bottom: the pbr banner naming the policies it found
+and will generate exclusion rules for, live failover status for both uplinks,
+the ten fields, and then the complete mwan3 configuration it will write,
+rendered before anything is applied:
+
+![WAN failover settings and the generated mwan3 configuration](docs/overview.png)
+
+And the hand-off. This is what you get if `/etc/config/mwan3` already contains
+anything wansentry did not write. Every field is disabled, the foreign sections
+are named, and nothing is generated:
+
+![Read-only hand-off when a foreign mwan3 configuration is present](docs/foreign-config.png)
+
 ## Why
 
 mwan3 is the right engine for this. It is actively maintained, and every sharp
@@ -198,22 +228,6 @@ still be attempted through the uplink that just died. mwan3 does not solve this
 either. wansentry shows the failure mode and the dnsmasq workaround on screen
 rather than pretending the problem does not exist.
 
-## Screenshots
-
-The settings screen, taken on a bench router with `pbr` installed and three
-policies present. Top to bottom: the pbr banner naming the policies it found
-and will generate exclusion rules for, live failover status for both uplinks,
-the ten fields, and then the complete mwan3 configuration it will write,
-rendered before anything is applied:
-
-![WAN failover settings and the generated mwan3 configuration](docs/overview.png)
-
-And the hand-off. This is what you get if `/etc/config/mwan3` already contains
-anything wansentry did not write. Every field is disabled, the foreign sections
-are named, and nothing is generated:
-
-![Read-only hand-off when a foreign mwan3 configuration is present](docs/foreign-config.png)
-
 ## Tests
 
 Three suites, 146 checks, no failures. Nothing reimplements the logic it tests:
@@ -241,11 +255,11 @@ implemented twice drifts. They use the same fixtures, in the same notation, so
 the two implementations are held to one answer. Details in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Install
+## Building from source
 
-**This package is not in the official OpenWrt feeds**, so there is no one-line
-install from a stock device. Build it with the OpenWrt SDK for your release and
-architecture, then install the resulting package.
+Prefer to compile it yourself, or running an OpenWrt release older than
+25.12 where the `.apk` above will not install? Build it with the OpenWrt
+SDK for your release, then install the resulting package.
 
 Build:
 
