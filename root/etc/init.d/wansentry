@@ -175,8 +175,29 @@ reconcile() {
 		# already-armed mwan3 still does NOT restart it, so established
 		# connections are not dropped for a threshold tweak. Only a genuinely
 		# unarmed mwan3 is restarted.
+		#
+		# WHY THIS IS NOT JUST `restart`, MEASURED 2026-09-03 AGAINST THE
+		# NFTABLES PORT. On dl12345's mwan3 3.6.12, `restart` on a service that
+		# is already STOPPED is a no-op: it returns success, and mwan3 stays
+		# down with no nft table, no ip rules and no trackers. Reproduced 2/2.
+		#
+		# That is exactly the state this branch exists to repair, so on that
+		# build the old line detected an unarmed mwan3, called restart, was
+		# told everything went fine, and left the router with no failover at
+		# all. Silent, and only discovered during an outage, which is the one
+		# outcome this file's comments keep saying we will not produce.
+		#
+		# Starting a stopped service and restarting a running one is also just
+		# the correct reading of the verbs. Upstream mwan3 2.12.0 tolerates
+		# `restart` from stopped; the port does not, and we support both.
 		/etc/init.d/mwan3 enable 2>/dev/null
-		mwan3_armed || /etc/init.d/mwan3 restart 2>/dev/null
+		if ! mwan3_armed; then
+			if /etc/init.d/mwan3 running >/dev/null 2>&1; then
+				/etc/init.d/mwan3 restart 2>/dev/null
+			else
+				/etc/init.d/mwan3 start 2>/dev/null
+			fi
+		fi
 	else
 		# No foreign config to preserve, so reconciling the service down is safe
 		# even when we own nothing. This is what catches a rolled-back FIRST

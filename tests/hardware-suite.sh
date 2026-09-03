@@ -97,7 +97,7 @@ restore() {
 	[ -f "$BK/wansentry" ] && cp "$BK/wansentry" /etc/config/wansentry
 	uci commit mwan3 2>/dev/null
 	uci commit wansentry 2>/dev/null
-	/etc/init.d/mwan3 restart >/dev/null 2>&1
+	mwan3_up
 	rm -rf "$BK" /tmp/mwan3-calls.log
 	rm -f /etc/rc.d/*mwan3.real*
 	printf '\nrestored /etc/config/mwan3 and /etc/config/wansentry\n'
@@ -217,6 +217,31 @@ restarted() {
 # An earlier version pre-set START/STOP/USE_PROCD here "so sourcing cannot start
 # anything". They were overwritten by the script's own values on the next line
 # and did nothing, while tripping SC2034 twice.
+# Bring mwan3 up, whichever mwan3 is installed.
+#
+# NOT just `restart`. Measured 2026-09-03 against dl12345's nftables port
+# 3.6.12: `restart` on an already-STOPPED mwan3 is a no-op there. It returns
+# success and leaves no nft table, no ip rules and no trackers. Upstream mwan3
+# 2.12.0 tolerates it, so the suite's eight direct `restart` calls passed for a
+# year and then produced four failures on the port that all looked like
+# wansentry bugs and were not.
+#
+# The trap is that the wrong version still LOOKS right: `mwan3 policies` reads
+# the config file, so it happily prints a policy for a daemon that is not
+# running. Only the runtime facts distinguish them.
+mwan3_up() {
+	# The restart call below is deliberately spelled out rather than reached
+	# through this function: writing the helper and then substituting every
+	# `/etc/init.d/mwan3 restart` in the file for `mwan3_up` put a recursive
+	# call right here, and the suite died with a stack-overflow segfault at the
+	# first setup step. My own edit, caught 2026-09-03 by the crash.
+	if /etc/init.d/mwan3 running >/dev/null 2>&1; then
+		/etc/init.d/mwan3 restart >/dev/null 2>&1
+	else
+		/etc/init.d/mwan3 start >/dev/null 2>&1
+	fi
+}
+
 armed() {
 	(
 		# shellcheck disable=SC1091
@@ -356,18 +381,18 @@ test_arming() {
 
 	# armed() sources the SHIPPED mwan3_armed(); see its definition above.
 	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
-	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 25
+	mwan3_up; sleep 25
 	chk "a member ONLINE reads as armed" "TRUE" "$(armed)"
 
 	# Point the probe at a host that cannot answer, so every member goes offline
 	# and only last_resort remains. This is the state the old check got wrong.
 	uci -q delete mwan3.wan.track_ip; uci add_list mwan3.wan.track_ip=192.0.2.1
-	uci commit mwan3; /etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 45
+	uci commit mwan3; mwan3_up; sleep 45
 	chk "every uplink OFFLINE still reads as armed (last_resort default)" \
 	    "TRUE" "$(armed)"
 
 	uci -q delete mwan3.wansentry_fail; uci commit mwan3
-	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 20
+	mwan3_up; sleep 20
 	chk "NO policy installed reads as NOT armed (the original bug)" \
 	    "FALSE" "$(armed)"
 }
@@ -445,7 +470,7 @@ test_security() {
 	uci set wansentry.main.enabled=0; uci commit wansentry
 	cp /etc/config/mwan3 "$BK/hand"
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
-	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 18
+	mwan3_up; sleep 18
 	chk "fixture: a foreign mwan3 is running with its boot symlink" \
 	    "1 YES" "$(symlinks) $(running)"
 
@@ -475,7 +500,7 @@ test_security() {
 	wipe_mwan3; uci commit mwan3
 	uci set wansentry.main.enabled=0; uci commit wansentry
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
-	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 15
+	mwan3_up; sleep 15
 	/etc/init.d/wansentry start >/dev/null 2>&1; sleep 5
 	chk "a rolled-back first enable IS reconciled down" \
 	    "0 NO" "$(symlinks) $(running)"
@@ -582,7 +607,7 @@ test_pbr() {
 	uci set mwan3.wansentry_def.wansentry='1'
 	uci commit mwan3
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
-	/etc/init.d/mwan3 restart >/dev/null 2>&1
+	mwan3_up
 	wait_armed 90 || bad "fixture: mwan3 never armed; pbr checks below are inert"
 
 	cp /etc/config/pbr "$BK/pbr" 2>/dev/null
@@ -701,7 +726,7 @@ test_pbr() {
 		*) bad "rule order is '$order'; the exclusion must come first or it never fires" ;;
 	esac
 
-	/etc/init.d/mwan3 restart >/dev/null 2>&1; sleep 20
+	mwan3_up; sleep 20
 	if mwan3 rules 2>/dev/null | grep -n '198.51.100.0/24' | head -1 | grep -q '^[12]:'; then
 		ok "mwan3 loaded the exclusion as its first user rule"
 	else
