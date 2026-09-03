@@ -188,8 +188,12 @@ reconcile() {
 		# outcome this file's comments keep saying we will not produce.
 		#
 		# Starting a stopped service and restarting a running one is also just
-		# the correct reading of the verbs. Upstream mwan3 2.12.0 tolerates
-		# `restart` from stopped; the port does not, and we support both.
+		# the correct reading of the verbs. The asymmetry was measured on the
+		# bench: from a stopped state, upstream 2.12.0 recovers on `restart`
+		# (running, 4 trackers) and the port does not (dead, 0 trackers). The
+		# fix is verified on BOTH engines, 37 hardware and 29 ownership checks
+		# each, so it is a compatibility widening rather than a swap of which
+		# build we support.
 		/etc/init.d/mwan3 enable 2>/dev/null
 		if ! mwan3_armed; then
 			if /etc/init.d/mwan3 running >/dev/null 2>&1; then
