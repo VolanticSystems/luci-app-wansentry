@@ -239,6 +239,158 @@ chk('and none of it as foreign', 0, back.foreign.length);
 const policy = want.find((x) => x.name === g.POLICY);
 chk('the policy sets last_resort=default', 'default', policy.options.last_resort);
 
+
+head('DUAL STACK: IPv6 is generated only when both uplinks have a v6 half');
+
+// THE DEFECT THIS CLOSES, found 2026-09-02. Every interface, member and rule
+// carried a hardcoded `family: 'ipv4'`, in three places. mwan3 manages only
+// the families it is told about, so on a dual-stack line a failover moved IPv4
+// to the backup and left IPv6 routing out the dead uplink, because nothing had
+// touched the v6 default route. The screen reported success while half the
+// traffic went nowhere. Most European ISPs are dual-stack, so that was the
+// common case rather than a corner.
+//
+// It is generated from the network config rather than a new UI field: OpenWrt
+// models the two halves of an uplink as `wan` and `wan6`, and mwan3's own
+// shipped config mirrors it. No question added to a screen whose whole pitch
+// is that it asks ten.
+
+// Build a generator whose `network` config contains the v6 peers.
+function genWith(networkSecs, pbrSecs) {
+	const secs = parseUciShow(GLOBALS);
+	const g = load(GEN, {
+		uci: uciStub({ mwan3: secs, wansentry: [], network: networkSecs,
+		               pbr: pbrSecs || [] })
+	});
+	loaded.push(g);
+	return g;
+}
+
+const V6NET = [
+	{ '.name': 'wan6',  '.type': 'interface', proto: 'dhcpv6' },
+	{ '.name': 'wwan6', '.type': 'interface', proto: 'dhcpv6' }
+];
+
+function modelFor(networkSecs, pbrSecs) {
+	const g = genWith(networkSecs, pbrSecs);
+	return g.desired(g.normalize({
+		enabled: '1', primary: 'wan', backup: 'wwan',
+		track_ip: '1.1.1.1 8.8.8.8', interval: '5', down: '3', up: '6',
+		failback: '1', flush_conntrack: '1'
+	}));
+}
+
+// THE SAFETY PROPERTY FIRST. On a v4-only router the output must be exactly
+// what this package produced before v6 existed. If this ever fails, the change
+// stopped being additive and started being a rewrite of everyone's config.
+//
+// SABOTAGE: make v6Peer() return a name without checking uci. This goes red.
+const v4only = modelFor([]);
+chk('a v4-only router still gets exactly six sections', 6, v4only.length);
+chk('and every one is still ipv4', [],
+    v4only.filter((x) => x.options.family === 'ipv6').map((x) => x.name));
+
+// One half present is NOT enough. A policy spanning two families needs the
+// backup in both, or a v6 failure has nowhere to go while v4 keeps working,
+// and that asymmetry is harder to diagnose than having no v6 at all.
+//
+// SABOTAGE: change the `p6 && b6` in desired() to `p6 || b6`. This goes red.
+const halfOnly = modelFor([ V6NET[0] ]);
+chk('primary has a v6 half but backup does not: still v4-only', 6, halfOnly.length);
+
+// A v6 interface that EXISTS but is switched off must not be tracked, or mwan3
+// marks it permanently down and fails the policy over to something that is
+// never coming back.
+//
+// SABOTAGE: drop the `disabled` check in v6Peer(). This goes red.
+const disabled = modelFor([
+	{ '.name': 'wan6',  '.type': 'interface', proto: 'dhcpv6' },
+	{ '.name': 'wwan6', '.type': 'interface', proto: 'dhcpv6', disabled: '1' }
+]);
+chk('a disabled v6 interface is not tracked', 6, disabled.length);
+
+// Now the dual-stack model itself.
+const dual = modelFor(V6NET);
+const dnames = dual.map((x) => x.name);
+const v6secs = dual.filter((x) => x.options.family === 'ipv6');
+
+chk('dual stack adds four sections (2 iface, 2 member) plus a v6 rule',
+    11, dual.length);
+chk('the v6 interfaces are the network config names', ['wan6', 'wwan6'],
+    dual.filter((x) => x.type === 'interface' && x.options.family === 'ipv6')
+        .map((x) => x.name));
+
+// SABOTAGE: leave policy.use_member at the two v4 members. This goes red, and
+// it is the check that matters most: interfaces and members that exist but are
+// not in the policy do nothing at all.
+chk('all four members are in the one policy',
+    ['wansentry_primary', 'wansentry_backup',
+     'wansentry_primary6', 'wansentry_backup6'],
+    dual.find((x) => x.type === 'policy').options.use_member);
+
+// SABOTAGE: drop the rule6 append. Then v6 has interfaces, members and a
+// policy, and no rule sending any traffic to it -- which looks completely
+// configured and manages nothing.
+const r6 = dual.find((x) => x.type === 'rule' && x.options.family === 'ipv6');
+chk('a v6 catch-all rule exists', true, r6 != null);
+chk('and it is the v6 default route', '::/0', r6 && r6.options.dest_ip);
+
+// THE PROBE MUST BE IN THE FAMILY IT PROBES. A v6 interface handed v4 track
+// hosts cannot reach any of them, is marked permanently down, and fails the
+// policy over to a backup that was never coming back.
+//
+// SABOTAGE: pass s.track_ip through for both families. This goes red.
+const v6iface = dual.find((x) => x.type === 'interface' &&
+                                 x.options.family === 'ipv6');
+const badHosts = (v6iface.options.track_ip || []).filter((a) => a.indexOf(':') === -1);
+chk('v6 interfaces get v6 track hosts', [], badHosts);
+chk('and v4 interfaces keep the user\'s own hosts', ['1.1.1.1', '8.8.8.8'],
+    dual.find((x) => x.type === 'interface' && x.options.family === 'ipv4')
+        .options.track_ip);
+
+// SABOTAGE: drop the `_6` suffix from the pbr rule name generator. Both passes
+// index from 1, so the v6 pass then overwrites the v4 exclusion of the same
+// number -- silently, because uci.set on an existing name is an update.
+//
+// THE FIXTURE MUST CONTAIN PBR POLICIES OR THIS PROVES NOTHING. Written first
+// against the pbr-free fixture above, where no pbr rules are generated in
+// either family, so there was no collision to find and the check passed
+// against an empty list. It was the sabotage run that exposed it, not reading
+// it: six of seven edits went red and this one stayed green.
+//
+// ONE v4 POLICY AND ONE v6 POLICY, which is the shape that collides. Each
+// family's pass indexes its own filtered list from 1, so both produce a rule
+// numbered 1 and the second write silently replaces the first.
+//
+// The first fixture here used a protocol-only policy on the theory that an
+// address-less claim is emitted into both families. It is not: pbrClaims()
+// skips a policy carrying neither a source nor a destination address, so that
+// claim never exists and the fixture generated a single v4 rule with nothing
+// to collide with. The sabotage stayed green twice before this was read rather
+// than assumed.
+const PBRFIX = [
+	{ '.name': 'pbr',  '.type': 'pbr', enabled: '1' },
+	{ '.name': 'pol1', '.type': 'policy', enabled: '1',
+	  src_addr: '192.168.1.10', interface: 'wan' },
+	{ '.name': 'pol6', '.type': 'policy', enabled: '1',
+	  src_addr: 'fd00:1234::10', interface: 'wan' }
+];
+
+const withPbr = modelFor(V6NET, PBRFIX);
+const pnames = withPbr.map((x) => x.name);
+const pbrGen = pnames.filter((n) => /^wansentry_pbr/.test(n));
+
+// Both families must actually have produced a rule, or there is no collision
+// to detect and everything below passes vacuously.
+if (pbrGen.length < 2)
+	bad(`fixture: only ${pbrGen.length} pbr rule(s) generated; the collision check is inert`);
+else
+	ok(`fixture: ${pbrGen.length} pbr exclusion rules generated across both families`);
+
+const dupes = pnames.filter((n, i) => pnames.indexOf(n) !== i);
+chk('no two generated sections share a name', [], dupes);
+
+
 head('VALIDATION refuses what it should');
 
 // SABOTAGE: delete any one guard from validate(). Its row goes red.

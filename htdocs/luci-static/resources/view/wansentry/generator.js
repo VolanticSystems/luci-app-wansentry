@@ -38,6 +38,9 @@
 var OWNER_OPT      = 'wansentry',
     MEMBER_PRIMARY = 'wansentry_primary',
     MEMBER_BACKUP  = 'wansentry_backup',
+    MEMBER_PRIMARY6 = 'wansentry_primary6',
+    MEMBER_BACKUP6  = 'wansentry_backup6',
+    RULE6           = 'wansentry_default6',
     POLICY         = 'wansentry_fail',
     RULE           = 'wansentry_def';
 
@@ -307,10 +310,73 @@ function pbrClaims() {
 	return { claims: claims, skipped: skipped };
 }
 
+/* ------------------------------------------------------------------ IPv6
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT OPTIONAL. mwan3 tracks each address
+ * family as its own interface section, so a config carrying only `family
+ * ipv4` leaves IPv6 completely unmanaged. On a dual-stack line that is worse
+ * than doing nothing: when the primary dies, IPv4 moves to the backup and IPv6
+ * keeps routing out the dead uplink, because nothing touched the v6 default
+ * route. The screen says failover worked and half the traffic is on the floor.
+ * Same shape as pbr's own warning about matching by IP rather than MAC, where
+ * "the blackhole appears to work while half of it leaks".
+ *
+ * OpenWrt models the two halves of one physical uplink as two logical
+ * interfaces, `wan` and `wan6`, and mwan3's own shipped config mirrors that
+ * with wan/wan6/wanb/wanb6. So the v6 peer of an interface is its name plus a
+ * six, and we generate for it only when it actually exists and is not
+ * disabled. On a v4-only router nothing below fires and the output is
+ * byte-identical to what this package produced before, which is what keeps
+ * this safe to add. */
+var V6_TRACK_DEFAULT = [ '2606:4700:4700::1111', '2001:4860:4860::8888' ];
+
+function v6Peer(name) {
+	var n = name + '6';
+
+	if (!name || !uci.get('network', n))
+		return null;
+
+	/* `disabled` is uci's own flag; an interface that exists but is switched
+	 * off must not be tracked, or mwan3 marks it permanently down and the
+	 * policy fails over to something that was never coming back. */
+	if (uci.get('network', n, 'disabled') === '1')
+		return null;
+
+	return n;
+}
+
+/* Is this a v6 literal? Deliberately crude: mwan3 only needs to know which
+ * family column a rule belongs in, and anything containing a colon that is not
+ * a port spec is v6. */
+function isV6Addr(a) {
+	return typeof a === 'string' && a.indexOf(':') !== -1;
+}
+
 /* The mwan3 rule sections that keep pbr's policies working. */
-function pbrRules() {
-	return pbrClaims().claims.map(function(c, i) {
-		var o = { family: 'ipv4' };
+function pbrRules(family) {
+	return pbrClaims().claims.filter(function(c) {
+		/* A claim naming a v6 address belongs only in the v6 pass, and a v4
+		 * one only in the v4 pass.
+		 *
+		 * The address-less branch below is defensive rather than reachable
+		 * today: pbrClaims() already drops any policy carrying neither a
+		 * source nor a destination address, so no such claim gets this far. It
+		 * is kept because if that ever changes, an exclusion emitted into only
+		 * one family is the collision this whole mechanism exists to prevent,
+		 * occurring half the time -- which is worse than not having it, being
+		 * harder to spot. Stated plainly because an earlier version of this
+		 * comment claimed the branch was doing work it cannot do, and a test
+		 * fixture was built on that claim. */
+		var v6 = isV6Addr(c.src_ip) || isV6Addr(c.dest_ip),
+		    v4 = (c.src_ip != null && !isV6Addr(c.src_ip)) ||
+		         (c.dest_ip != null && !isV6Addr(c.dest_ip));
+
+		if (!v6 && !v4)
+			return true;
+
+		return (family === 'ipv6') ? v6 : v4;
+	}).map(function(c, i) {
+		var o = { family: family };
 
 		if (c.src_ip)    o.src_ip    = c.src_ip;
 		if (c.dest_ip)   o.dest_ip   = c.dest_ip;
@@ -324,7 +390,18 @@ function pbrRules() {
 		o.use_policy = 'default';
 		o[OWNER_OPT] = '1';
 
-		return { name: PBR_PREFIX + (i + 1), type: 'rule', options: o };
+		/* THE FAMILY SUFFIX IS NOT COSMETIC. Both passes index from 1, so
+		 * without it the v6 pass emits wansentry_pbr1 again and overwrites the
+		 * v4 exclusion of the same number -- silently, because uci.set on an
+		 * existing name is an update. The pbr exclusions would then exist for
+		 * one family only, which is exactly the collision they were added to
+		 * prevent. Caught before it shipped by looking at the name generator
+		 * rather than by a test, which is why the suite now covers it. */
+		return {
+			name:    PBR_PREFIX + (i + 1) + (family === 'ipv6' ? '_6' : ''),
+			type:    'rule',
+			options: o
+		};
 	});
 }
 
@@ -490,10 +567,10 @@ function classify(networks, chosen, showAll) {
 
 /* --------------------------------------------------- desired mwan3 model */
 
-function trackOptions(s) {
+function trackOptions(s, family) {
 	var o = {
 		enabled:           s.enabled ? '1' : '0',
-		family:            'ipv4',
+		family:            family || 'ipv4',
 		/* DELIBERATELY NOT mwan3's own default of 'online'. Measured on the
 		 * bench 2026-08-28, and it is the commonest real outage that exposes it.
 		 *
@@ -524,7 +601,20 @@ function trackOptions(s) {
 		 * screen already names as the cost of flushing at all. */
 		initial_state:     'offline',
 		track_method:      'ping',
-		track_ip:          s.track_ip.slice(),
+		/* THE PROBE MUST BE IN THE FAMILY IT IS PROBING. mwan3 pings the
+		 * listed addresses over the interface it is tracking, so a v6
+		 * interface handed v4 track hosts cannot reach any of them and is
+		 * marked permanently down -- which then fails the whole policy over to
+		 * a backup that was never coming back.
+		 *
+		 * The user's configured hosts are v4 (the screen validates them as
+		 * such), so v6 gets a fixed pair instead. Cloudflare and Google, which
+		 * is deliberately two DIFFERENT operators for the reason this package
+		 * already documents for v4: a single ICMP-hostile target otherwise
+		 * reads as an outage. */
+		track_ip:          (family === 'ipv6')
+		                       ? V6_TRACK_DEFAULT.slice()
+		                       : s.track_ip.slice(),
 		/* Any single host answering keeps the uplink up. Some upstreams rate
 		 * limit or drop ICMP outright, and a two-host check that demands both
 		 * turns that into a phantom outage (prior-art audit, sharp edge 7). */
@@ -586,20 +676,74 @@ function desired(s) {
 
 	policy[OWNER_OPT] = '1';
 
+	/* DUAL STACK, GENERATED ONLY WHEN BOTH UPLINKS ACTUALLY HAVE A v6 HALF.
+	 *
+	 * Both, not either: a policy whose members span two families needs the
+	 * backup to exist in both, or a v6 failure has nowhere to go and mwan3
+	 * blackholes it while v4 carries on working. That asymmetry is harder to
+	 * diagnose than having no v6 management at all, so the rule is all or
+	 * nothing. On a v4-only router p6 and b6 are both null, every branch below
+	 * is skipped, and the generated config is exactly what it was before. */
+	var p6 = v6Peer(s.primary),
+	    b6 = v6Peer(s.backup),
+	    dual = !!(p6 && b6);
+
+	if (dual) {
+		policy.use_member = [ MEMBER_PRIMARY, MEMBER_BACKUP,
+		                      MEMBER_PRIMARY6, MEMBER_BACKUP6 ];
+	}
+
+	var rule6 = null;
+
+	if (dual) {
+		rule6 = {
+			dest_ip:    '::/0',
+			family:     'ipv6',
+			use_policy: POLICY,
+			sticky:     s.failback ? '0' : '1'
+		};
+
+		if (!s.failback)
+			rule6.timeout = '600';
+
+		rule6[OWNER_OPT] = '1';
+	}
+
 	/* Rule ORDER is load-bearing: mwan3 evaluates rules in file order and stops
 	 * at the first match, so every pbr exclusion must precede the catch-all or
 	 * it can never fire. write() enforces this position after the fact, because
 	 * uci.add always appends and a rule added on a later apply would otherwise
-	 * land behind the catch-all and silently do nothing. */
-	return [
-		{ name: s.primary, type: 'interface', options: trackOptions(s) },
-		{ name: s.backup,  type: 'interface', options: trackOptions(s) },
-		{ name: MEMBER_PRIMARY, type: 'member', options: member(s.primary, '1') },
-		{ name: MEMBER_BACKUP,  type: 'member', options: member(s.backup,  '2') },
-		{ name: POLICY, type: 'policy', options: policy }
-	].concat(pbrRules(), [
-		{ name: RULE, type: 'rule', options: rule }
-	]);
+	 * land behind the catch-all and silently do nothing.
+	 *
+	 * The v6 catch-all goes last for the same reason, after the v6 exclusions.
+	 * mwan3 matches within a family, so the two catch-alls do not shadow one
+	 * another. */
+	var out = [
+		{ name: s.primary, type: 'interface', options: trackOptions(s, 'ipv4') },
+		{ name: s.backup,  type: 'interface', options: trackOptions(s, 'ipv4') }
+	];
+
+	if (dual) {
+		out.push({ name: p6, type: 'interface', options: trackOptions(s, 'ipv6') });
+		out.push({ name: b6, type: 'interface', options: trackOptions(s, 'ipv6') });
+	}
+
+	out.push({ name: MEMBER_PRIMARY, type: 'member', options: member(s.primary, '1') });
+	out.push({ name: MEMBER_BACKUP,  type: 'member', options: member(s.backup,  '2') });
+
+	if (dual) {
+		out.push({ name: MEMBER_PRIMARY6, type: 'member', options: member(p6, '1') });
+		out.push({ name: MEMBER_BACKUP6,  type: 'member', options: member(b6, '2') });
+	}
+
+	out.push({ name: POLICY, type: 'policy', options: policy });
+
+	out = out.concat(pbrRules('ipv4'), [ { name: RULE, type: 'rule', options: rule } ]);
+
+	if (dual)
+		out = out.concat(pbrRules('ipv6'), [ { name: RULE6, type: 'rule', options: rule6 } ]);
+
+	return out;
 }
 
 /* ------------------------------------------------------------- ownership */

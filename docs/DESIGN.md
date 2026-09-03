@@ -1014,3 +1014,42 @@ that has stopped locking anything at all.
 This is also the first test of any kind against `overview.js`, which until now
 had none.
 
+## 15. IPv6, and why generating only IPv4 was worse than doing nothing
+
+Added in 1.1.2.
+
+Every interface, member and rule this package generated carried a hardcoded
+`family 'ipv4'`, in three separate places. mwan3 manages only the families it
+is told about, so on a dual-stack line the result was a failover that moved
+IPv4 to the backup and left IPv6 routing out the dead uplink, because nothing
+had touched the v6 default route. The screen reported success while half the
+traffic went nowhere. That is the same shape as pbr's own warning about
+matching by IP rather than MAC, where "the blackhole appears to work while half
+of it leaks", and on a continent where most ISPs are dual-stack it was the
+common case rather than a corner.
+
+**It is derived, not asked.** OpenWrt models the two halves of one uplink as
+two logical interfaces, `wan` and `wan6`, and mwan3's shipped config mirrors
+that with wan/wan6/wanb/wanb6. So the v6 peer of an interface is its name plus
+a six, and wansentry generates for it when that interface exists and is not
+disabled. No new question on a screen whose entire pitch is that it asks ten.
+
+**Both halves or neither.** A policy spanning two families needs the backup in
+both, or a v6 failure has nowhere to go while v4 carries on working, and that
+asymmetry is harder to diagnose than having no v6 management at all. On a
+v4-only router the generated config is byte-identical to what 1.1.1 produced,
+which is the property that makes this safe to add and the first thing the
+suite asserts.
+
+**The probe must be in the family it probes.** A v6 interface handed v4 track
+hosts cannot reach any of them, is marked permanently down, and fails the
+policy over to a backup that was never coming back. The user's configured hosts
+are v4, so v6 gets a fixed pair on two different operators, for the same reason
+§7 gives for v4.
+
+**Scope, stated honestly.** This is generation-tested, not failover-tested.
+The 95-check generator suite runs offline and verifies exhaustively what is
+written; there is no IPv6 anywhere in the development environment to carry a
+live v6 failover, and testing mwan3's own v6 behaviour is not this package's
+job. What is claimed is that the configuration is correct, not that mwan3 acts
+on it correctly.
