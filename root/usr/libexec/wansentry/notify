@@ -1,0 +1,174 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 VolanticSystems
+#
+# wansentry email notifications.
+#
+#   notify event <INTERFACE> <ACTION>   an uplink or tunnel went down / came back
+#   notify daily                        the once-a-day report of every path
+#   notify test                         a test message, from the settings screen
+#
+# Why email at all: a WAN failover that works is QUIET. The backup carries the
+# traffic, nothing looks broken, and the first anyone hears of a dead primary is
+# when the backup dies too. The daily report exists for the mirror case: a
+# backup that died weeks ago and has never been needed since.
+#
+# Sends with msmtp, configured at run time from /etc/config/wansentry (section
+# `notify`). The generated msmtp config holds the SMTP password, so it is
+# written 0600 under /var/run and deleted after each send.
+
+. /lib/functions.sh
+
+TAG=wansentry
+log() { logger -t "$TAG" -p "daemon.$1" "notify: $2"; }
+
+config_load wansentry
+config_get_bool enabled notify enabled 0
+config_get to       notify to
+config_get from     notify from
+config_get server   notify server
+config_get port     notify port 587
+config_get_bool tls notify tls 1
+config_get user     notify username
+config_get pass     notify password
+
+host=$(uci -q get system.@system[0].hostname)
+[ -n "$host" ] || host=OpenWrt
+
+# ------------------------------------------------------------------ status
+
+# One line per interface wansentry manages: WAN uplinks and VPN tunnels alike.
+# mwan3 is the authority on whether a path works; "offline" means its probes
+# are failing, which for a backup nobody is using is exactly the news.
+paths() {
+	local i kind st
+	for i in $(uci -q show mwan3 | sed -n "s/^mwan3\.\([^.]*\)\.wansentry='1'$/\1/p" | sort -u); do
+		[ "$(uci -q get "mwan3.$i")" = interface ] || continue
+		kind=uplink
+		[ "$(uci -q get "mwan3.$i.wansentry_vpn")" = 1 ] && kind=tunnel
+		st=$(mwan3 interfaces 2>/dev/null | sed -n "s/^ interface $i is \([a-z]*\).*/\1/p")
+		printf '%s %s %s\n' "$i" "$kind" "${st:-unknown}"
+	done
+}
+
+# Which member each policy is using right now, read back from mwan3's live
+# chains (`mwan3 status`), by policy NAME.
+active() {
+	mwan3 status 2>/dev/null | sed -n '/Current ipv4 policies/,/^$/p' |
+		sed -n "/^$1:/,/^[^ ]/{s/^ \([a-zA-Z0-9_]*\) (100%)/\1/p;s/^ \(unreachable\|default\|blackhole\)$/\1/p}" | head -1
+}
+
+summary() {
+	local w v
+	w=$(active wansentry_fail); v=$(active wansentry_vpn)
+	[ -n "$w" ] && echo "Internet traffic is using: $w"
+	[ -n "$v" ] && case "$v" in
+		unreachable) echo "Tunnel traffic: BLOCKED, every tunnel is down (killswitch holding)" ;;
+		default)     echo "Tunnel traffic: every tunnel is down, falling back to the ordinary internet" ;;
+		*)           echo "Tunnel traffic is using: $v" ;;
+	esac
+	echo
+	echo "All paths:"
+	paths | while read -r i kind st; do printf '  %-12s %-7s %s\n' "$i" "$kind" "$st"; done
+}
+
+# ------------------------------------------------------------------- send
+
+send() {
+	local subject="$1" body="$2" rc conf
+	if [ -z "$to" ] || [ -z "$server" ]; then
+		log warn "not sent, no recipient or SMTP server configured: $subject"
+		return 1
+	fi
+	command -v msmtp >/dev/null 2>&1 || { log warn "not sent, msmtp is not installed: $subject"; return 1; }
+
+	conf=$(mktemp /var/run/wansentry-msmtp.XXXXXX) || return 1
+	chmod 600 "$conf"
+	{
+		echo "account default"
+		echo "host $server"
+		echo "port $port"
+		echo "from ${from:-$to}"
+		if [ "$tls" = 1 ]; then
+			echo "tls on"
+			echo "tls_starttls $([ "$port" = 465 ] && echo off || echo on)"
+			echo "tls_trust_file /etc/ssl/certs/ca-certificates.crt"
+		else
+			echo "tls off"
+		fi
+		if [ -n "$user" ]; then
+			echo "auth on"
+			echo "user $user"
+			echo "password $pass"
+		else
+			echo "auth off"
+		fi
+	} > "$conf"
+
+	printf 'To: %s\nFrom: %s\nSubject: [%s] %s\nContent-Type: text/plain; charset=UTF-8\n\n%s\n' \
+		"$to" "${from:-$to}" "$host" "$subject" "$body" |
+		msmtp -C "$conf" -t >/var/run/wansentry-msmtp.err 2>&1
+	rc=$?
+	rm -f "$conf"
+	if [ "$rc" -eq 0 ]; then
+		log notice "sent: $subject"
+	else
+		log err "FAILED (msmtp exit $rc): $subject: $(head -c 200 /var/run/wansentry-msmtp.err)"
+	fi
+	rm -f /var/run/wansentry-msmtp.err
+	return "$rc"
+}
+
+# ----------------------------------------------------------------- actions
+
+case "$1" in
+	test)
+		# Sent even with notifications switched off: the point of the button
+		# is to prove the mail path before relying on it.
+		send "test message" "This is a test from wansentry on $host.
+
+$(summary)"
+		exit $?
+		;;
+esac
+
+[ "$enabled" = 1 ] || exit 0
+
+case "$1" in
+	event)
+		iface="$2"; action="$3"
+		case "$action" in
+			disconnected) what="is DOWN" ;;
+			connected)    what="is back up" ;;
+			*) exit 0 ;;
+		esac
+		kind=uplink
+		[ "$(uci -q get "mwan3.$iface.wansentry_vpn")" = 1 ] && kind=tunnel
+
+		# Boot produces a "connected" event for every path within the first
+		# minutes. Mail for each would be noise; one boot report says the same.
+		up=$(cut -d. -f1 /proc/uptime)
+		if [ "$up" -lt 300 ]; then
+			[ -e /var/run/wansentry-bootmail ] && exit 0
+			touch /var/run/wansentry-bootmail
+			sleep 120
+			send "router started" "$host started $(( up / 60 )) minute(s) ago. Status two minutes later:
+
+$(summary)"
+			exit $?
+		fi
+
+		send "$kind $iface $what" "$(date '+%Y-%m-%d %H:%M:%S'): $kind $iface $what.
+
+$(summary)"
+		;;
+	daily)
+		down=$(paths | awk '$3 != "online" {print $1}' | tr '\n' ' ')
+		if [ -n "$down" ]; then
+			subj="daily report: NOT all paths up ($down)"
+		else
+			subj="daily report: all paths up"
+		fi
+		send "${subj% }" "$(summary)"
+		;;
+esac

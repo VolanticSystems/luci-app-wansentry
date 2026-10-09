@@ -630,18 +630,17 @@ const mkSettings = (gen) => gen.normalize({
 	chk('and so is the protocol', 'tcp', o2.proto);
 }
 
-// Determinism. An unstable order would rewrite /etc/config/mwan3 on every
-// apply, which breaks the package's idempotency claim and churns a file people
-// keep in version control.
+// ORDER FOLLOWS pbr, AND THAT IS NOW THE POINT (changed 2026-10-08).
 //
-// SABOTAGE: remove the claims.sort() in pbrClaims().
+// This check used to assert the opposite: that reordering /etc/config/pbr did
+// NOT change the output, because pbrClaims() sorted by address. That was
+// harmless while every claim produced the same `use_policy default`. VPN
+// failover gives claims different verdicts, and both engines are first-match
+// in order, so the sort became a defect: '…/25|' sorts before '…/25|DMZ', and
+// the tunnel rule would swallow the DMZ traffic pbr's FIRST policy keeps local.
 //
-// The first version of this check loaded the SAME fixture twice and compared
-// the two results. That passes with or without the sort, because the same input
-// in the same order produces the same output either way: a tautology sitting in
-// the check meant to catch non-determinism. What the sort actually buys is that
-// the ORDER OF SECTIONS IN /etc/config/pbr does not change wansentry's output,
-// so reordering the fixture is the only thing that tests it.
+// SABOTAGE: put back a claims.sort() by address in pbrClaims(). Both checks
+// below go red, the second one naming the exact shadowing.
 {
 	const REVERSED = PBR_ON +
 		"pbr.p2=policy\npbr.p2.name='Proxy_Egress'\n" +
@@ -659,8 +658,180 @@ const mkSettings = (gen) => gen.normalize({
 		return [ o.src_ip, o.dest_ip, o.proto ].join('|');
 	});
 
-	chk('reordering /etc/config/pbr does not change the exclusions',
-	    opts(PBR_REAL), opts(REVERSED));
+	chk('rules follow pbr\'s own policy order',
+	    [ '192.168.72.128/25|192.168.178.0/24|', '192.168.72.128/25||', '192.168.72.6||' ],
+	    opts(PBR_REAL));
+	chk('and reversing pbr\'s order reverses them, as it would reverse pbr itself',
+	    opts(PBR_REAL).slice().reverse(), opts(REVERSED));
+}
+
+// ------------------------------------------------------------ VPN failover
+//
+// Measured design: VPN-FAILOVER-BENCH-2026-10-08.md in the parent repo. These
+// checks pin what the bench proved has to be true of the generated config.
+head('VPN failover');
+
+const vpnSettings = (gen, extra) => gen.normalize(Object.assign({
+	enabled: '1', primary: 'wan', backup: 'wwan',
+	track_ip: '1.1.1.1 8.8.8.8', interval: '5', down: '3', up: '6',
+	failback: '1', flush_conntrack: '1',
+	vpn_enabled: '1', vpn_tunnel: [ 'vpnusa', 'vpnusa2', 'vpnusa3' ],
+	vpn_track_ip: [ '1.1.1.1', '8.8.8.8' ], vpn_interval: '5',
+	vpn_down: '3', vpn_up: '3', vpn_killswitch: '1'
+}, extra || {}));
+
+// THE SAFETY PROPERTY FIRST, as for IPv6: a router that never turns VPN
+// failover on must get exactly the configuration it got before it existed.
+//
+// SABOTAGE: make vpnSections() ignore vpnActive(). This goes red.
+{
+	const gen = genPbr(PBR_REAL);
+	const before = gen.desired(mkSettings(gen));
+	const off = gen.desired(vpnSettings(gen, { vpn_enabled: '0' }));
+
+	chk('VPN failover off: output identical to a config that never had it',
+	    JSON.stringify(before), JSON.stringify(off));
+	chk('and every pbr rule is still a plain exclusion', [],
+	    off.filter((d) => d.type === 'rule' && d.name.indexOf(gen.PBR_PREFIX) === 0
+	                      && d.options.use_policy !== 'default').map((d) => d.name));
+}
+
+{
+	const gen = genPbr(PBR_REAL);
+	const want = gen.desired(vpnSettings(gen));
+	const by = (n) => want.filter((d) => d.name === n)[0];
+	const names = want.map((d) => d.name);
+
+	// Each tunnel is a tracked mwan3 interface carrying the marker the
+	// router-side scripts key on.
+	//
+	// SABOTAGE: drop `o[VPN_OPT] = '1'` from vpnTrackOptions(). This goes red,
+	// and on a router the route and flush hooks would silently skip every
+	// tunnel: no default route means an empty mwan3 table (no failover at
+	// all), no flush means live connections stuck on a dead tunnel.
+	chk('all three tunnels are generated as interfaces carrying the VPN marker',
+	    [ '1', '1', '1' ],
+	    [ 'vpnusa', 'vpnusa2', 'vpnusa3' ].map((t) => by(t) && by(t).options[gen.VPN_OPT]));
+
+	// No GLOBAL conntrack flush on a tunnel. mwan3's flush drops every
+	// connection on the router, so a tunnel blip would cut the half of the LAN
+	// that never uses it. The selective hook does it instead.
+	//
+	// SABOTAGE: add flush_conntrack to vpnTrackOptions(). This goes red.
+	chk('tunnels carry no global flush_conntrack', [],
+	    [ 'vpnusa', 'vpnusa2', 'vpnusa3' ].filter((t) => by(t).options.flush_conntrack));
+
+	// The bench timings: 2 s probe timeout, 2 s between checks once failing.
+	// With the WAN defaults (4 s, 5 s) detection measured 38 s instead of 17.
+	//
+	// SABOTAGE: reuse trackOptions() for tunnels. This goes red.
+	chk('tunnel probe timeout and failure interval are the measured 2 s',
+	    [ '2', '2' ], [ by('vpnusa').options.timeout, by('vpnusa').options.failure_interval ]);
+
+	// Members in list order, metric = position, so the first tunnel is
+	// preferred and the rest are tried in turn.
+	//
+	// SABOTAGE: give every member metric '1'. That is load balancing, not
+	// failover, and this goes red.
+	chk('members are ordered by metric 1, 2, 3',
+	    [ 'vpnusa:1', 'vpnusa2:2', 'vpnusa3:3' ],
+	    [ 'wansentry_tun1', 'wansentry_tun2', 'wansentry_tun3' ]
+	        .map((m) => by(m) && (by(m).options.interface + ':' + by(m).options.metric)));
+
+	// THE KILLSWITCH. With every tunnel dead the tunnel's traffic must get no
+	// route at all rather than leak out the ordinary internet. Bench test 3.
+	//
+	// SABOTAGE: write last_resort 'default' unconditionally. This goes red.
+	const vpol = by(gen.VPN_POLICY);
+	chk('the VPN policy fails closed (last_resort unreachable)',
+	    'unreachable', vpol && vpol.options.last_resort);
+	{
+		const g2 = genPbr(PBR_REAL);
+		const open = g2.desired(vpnSettings(g2, { vpn_killswitch: '0' }))
+		              .filter((d) => d.name === g2.VPN_POLICY)[0];
+		chk('and fails open only when the killswitch is switched off',
+		    'default', open && open.options.last_resort);
+	}
+
+	// THE SHADOWING CASE, end to end. The DMZ exclusion must be evaluated
+	// before the tunnel rule that covers the same source, exactly as pbr
+	// orders them, and the tunnel rules must go to the VPN policy.
+	//
+	// SABOTAGE: put back the address sort in pbrClaims(). The DMZ rule then
+	// lands after the tunnel rule and this goes red.
+	const rules = want.filter((d) => d.type === 'rule');
+	const verdict = rules.map((r) => (r.options.dest_ip || r.options.src_ip) + '>' + r.options.use_policy);
+	chk('rules: DMZ exclusion, then tunnel traffic to the VPN policy, then the WAN catch-all',
+	    [ '192.168.178.0/24>default', '192.168.72.128/25>wansentry_vpn',
+	      '192.168.72.6>wansentry_vpn', '0.0.0.0/0>wansentry_fail' ],
+	    verdict);
+
+	chk('tunnel rules are not sticky, so a recovered primary is used at once',
+	    [ '0', '0' ],
+	    rules.filter((r) => r.options.use_policy === gen.VPN_POLICY).map((r) => r.options.sticky));
+
+	// mwan3 SILENTLY SKIPS any policy or rule whose name exceeds 15 characters
+	// (mwan3.sh: cut -c1-15). A long name would generate a policy that is
+	// never installed, and nothing would say so.
+	//
+	// SABOTAGE: rename VPN_POLICY to 'wansentry_vpnfail'. This goes red.
+	chk('every generated policy and rule name fits mwan3\'s 15-character limit', [],
+	    want.filter((d) => (d.type === 'policy' || d.type === 'rule') && d.name.length > 15)
+	        .map((d) => d.name));
+
+	// The generator's own output must audit as owned, or the second apply
+	// refuses with "configuration wansentry did not create".
+	let fixture = GLOBALS;
+	want.forEach((d) => {
+		fixture += `mwan3.${d.name}=${d.type}\nmwan3.${d.name}.wansentry='1'\n`;
+	});
+	const a = genPbr(PBR_REAL, fixture).audit();
+	chk('the generated VPN sections audit as owned, none foreign', 0, a.foreign.length);
+	void names;
+}
+
+// VPN only, no WAN half: no uplink sections and, crucially, no catch-all, so
+// ordinary traffic is not touched by mwan3 at all.
+//
+// SABOTAGE: emit RULE unconditionally in desired(). This goes red.
+{
+	const gen = genPbr(PBR_REAL);
+	const s = vpnSettings(gen, { primary: '', backup: '' });
+
+	chk('VPN-only settings validate', null, gen.validate(s));
+
+	const want = gen.desired(s);
+	chk('VPN-only: no WAN policy and no catch-all rule', [],
+	    want.filter((d) => d.name === gen.POLICY || d.name === gen.RULE).map((d) => d.name));
+}
+
+// Refusals, each one a configuration that would apply cleanly and fail
+// silently on the router.
+{
+	const gen = genPbr(PBR_REAL);
+	const v = (extra) => gen.validate(vpnSettings(gen, extra));
+
+	// SABOTAGE for each: delete the matching branch in validate().
+	chk('one tunnel is refused (it is a tunnel, not failover)',
+	    true, !!v({ vpn_tunnel: [ 'vpnusa' ] }));
+	chk('a tunnel listed twice is refused',
+	    true, !!v({ vpn_tunnel: [ 'vpnusa', 'vpnusa2', 'vpnusa' ] }));
+	chk('an interface that is both uplink and tunnel is refused',
+	    true, !!v({ vpn_tunnel: [ 'vpnusa', 'wwan' ] }));
+	chk('VPN failover with no health-check host is refused',
+	    true, !!v({ vpn_track_ip: [] }));
+	chk('a WAN half with only one uplink chosen is still refused',
+	    true, !!v({ backup: '' }));
+	chk('and a complete configuration is accepted', null, v({}));
+
+	// THE ONE THAT MATTERS MOST: tunnels nobody sends traffic into. It
+	// applies, arms, shows green, and moves nothing.
+	//
+	// SABOTAGE: delete the pbrClaims() check at the end of validate().
+	const g3 = genPbr(PBR_ON + "pbr.p0=policy\npbr.p0.name='Other'\n" +
+	                  "pbr.p0.src_addr='10.0.0.0/8'\npbr.p0.interface='wan'\n");
+	chk('tunnels that no pbr policy sends traffic into are refused',
+	    true, !!g3.validate(vpnSettings(g3)));
 }
 
 // The generator must not classify its own exclusions as foreign, or the second

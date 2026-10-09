@@ -1,0 +1,19 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 VolanticSystems
+#
+# Email when a path wansentry manages goes down or comes back.
+#
+# `connected` / `disconnected` are mwan3track's verdicts (probes passing or
+# failing over the up/down thresholds), not netifd link events, so a flapping
+# cable does not produce a mail per flap: mwan3's hysteresis has already
+# filtered it. Runs the sender in the background so a slow SMTP server can
+# never hold up the hotplug chain that the failover itself runs on.
+
+case "$ACTION" in connected|disconnected) ;; *) exit 0 ;; esac
+[ -n "$INTERFACE" ] || exit 0
+[ "$(uci -q get wansentry.notify.enabled)" = 1 ] || exit 0
+[ "$(uci -q get "mwan3.$INTERFACE.wansentry")" = 1 ] || exit 0
+
+/usr/libexec/wansentry/notify event "$INTERFACE" "$ACTION" </dev/null >/dev/null 2>&1 &
+exit 0

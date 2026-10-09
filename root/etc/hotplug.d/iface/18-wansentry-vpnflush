@@ -1,0 +1,56 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 VolanticSystems
+#
+# VPN failover: when a tunnel dies, forget ONLY the connections pinned to it.
+#
+# mwan3 keeps each connection on the member it started on (it saves the member
+# mark into the conntrack entry and restores it on every packet). New
+# connections follow the policy to the next tunnel; existing ones keep being
+# sent into the dead one for ever. Measured on the bench 2026-10-08, test 5: a
+# long-lived flow lost 101 of 110 packets and never recovered.
+#
+# mwan3's own `flush_conntrack` would cure it, but globally: every connection on
+# the router, so a transatlantic tunnel blip would also cut every client that
+# never goes near the tunnel. This deletes only the entries carrying the dead
+# tunnel's mark. With it, test 5 lost 17 s (detection) and carried on through
+# the next tunnel.
+#
+# Triggered by mwan3track's `disconnected` (tracking failed, device still up)
+# and netifd's `ifdown` (tunnel gone). Not on recovery: a connection that moved
+# to a backup tunnel still works there, and cutting it to send it home would
+# break something healthy.
+
+case "$ACTION" in disconnected|ifdown) ;; *) exit 0 ;; esac
+[ -n "$INTERFACE" ] || exit 0
+[ "$(uci -q get "mwan3.$INTERFACE.wansentry_vpn")" = 1 ] || exit 0
+
+command -v conntrack >/dev/null 2>&1 || {
+	logger -t wansentry -p daemon.warn \
+		"vpn: $INTERFACE down but conntrack is not installed; its live connections stay pinned to it"
+	exit 0
+}
+
+# The mark mwan3 gives this interface, computed by mwan3's OWN functions so it
+# cannot drift from mwan3: the id is the interface's position in
+# /etc/config/mwan3, spread into the bits of the configurable mmx_mask.
+#
+# mwan3_get_iface_id lives in mwan3.sh, NOT common.sh. The first version sourced
+# only common.sh, the call failed with "not found", `id` stayed empty and the
+# hook exited 0 having flushed nothing, which is the bench test 5 failure all
+# over again with a green log. Caught by running the hook by hand under sh -x.
+. /lib/functions.sh
+. /lib/mwan3/common.sh
+. /lib/mwan3/mwan3.sh
+config_load mwan3
+mwan3_init
+mwan3_get_iface_id id "$INTERFACE"
+[ -n "$id" ] || {
+	logger -t wansentry -p daemon.warn \
+		"vpn: $INTERFACE $ACTION but its mwan3 id could not be determined; its connections stay pinned to it"
+	exit 0
+}
+mark=$(mwan3_id2mask id MMX_MASK)
+
+n=$(conntrack -D -m "$mark/$MMX_MASK" 2>&1 | sed -n 's/.* \([0-9][0-9]*\) flow entries have been deleted.*/\1/p')
+logger -t wansentry "vpn: $INTERFACE $ACTION, forgot ${n:-0} connection(s) pinned to it (mark $mark)"

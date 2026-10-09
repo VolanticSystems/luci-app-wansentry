@@ -51,9 +51,16 @@ mwan3_armed() {
 }
 
 reconcile() {
-	local enabled owned managed foreign dump rc managed_names claimed
+	local enabled vpn_enabled owned managed foreign dump rc managed_names claimed
 	config_load wansentry
 	config_get_bool enabled main enabled 0
+
+	# mwan3 carries BOTH halves of this package, so it must run when either is
+	# on. Measured 2026-10-08 on the bench: with WAN failover off and VPN
+	# failover configured, the old single test stopped mwan3 on the next reload
+	# trigger and every tunnel went untracked.
+	config_get_bool vpn_enabled vpn enabled 0
+	[ "$vpn_enabled" = 1 ] && enabled=1
 
 	# Read /etc/config/mwan3 ONCE, and keep uci's exit status, because "there is
 	# nothing here" and "I could not read it" are different facts that require
@@ -213,12 +220,79 @@ reconcile() {
 	fi
 }
 
+# The daily report is one line in root's crontab, tagged so it is the ONLY line
+# this ever touches. Added when notifications and the daily report are both on,
+# removed otherwise, rewritten if the hour changed. Independent of the mwan3
+# ownership gate above: it is wansentry's own line, not mwan3 configuration.
+CRON=/etc/crontabs/root
+CRON_TAG='# wansentry-daily'
+
+reconcile_cron() {
+	local on daily hour want have
+	on=$(uci -q get wansentry.notify.enabled)
+	daily=$(uci -q get wansentry.notify.daily)
+	hour=$(uci -q get wansentry.notify.daily_hour)
+	case "$hour" in ''|*[!0-9]*) hour=8 ;; esac
+	[ "$hour" -le 23 ] || hour=8
+
+	want=""
+	[ "$on" = 1 ] && [ "${daily:-1}" = 1 ] &&
+		want="0 $hour * * * /usr/libexec/wansentry/notify daily $CRON_TAG"
+	have=$(grep -F "$CRON_TAG" "$CRON" 2>/dev/null)
+
+	[ "$want" = "$have" ] && return 0
+
+	mkdir -p "${CRON%/*}"
+	touch "$CRON"
+	grep -vF "$CRON_TAG" "$CRON" > "$CRON.wansentry" 2>/dev/null
+	[ -n "$want" ] && echo "$want" >> "$CRON.wansentry"
+	cat "$CRON.wansentry" > "$CRON"
+	rm -f "$CRON.wansentry"
+	# Stock OpenWrt ships cron disabled at boot, so a schedule written into an
+	# idle crond would never run. Enable it only when we actually need it.
+	[ -n "$want" ] && { /etc/init.d/cron enabled 2>/dev/null || /etc/init.d/cron enable 2>/dev/null; }
+	/etc/init.d/cron restart 2>/dev/null
+}
+
+# Give every failover tunnel that is ALREADY up its default route, and have
+# mwan3 rebuild that tunnel's table if the route was missing.
+#
+# 14-wansentry-vpnroute adds the route on ifup, which covers boot and every
+# reconnect, but not the moment VPN failover is first switched on: the tunnels
+# are up long before they are marked, so no ifup ever reaches the hook. mwan3
+# then builds each tunnel's table from a main table with no default for that
+# device, the tables come out empty, and the policy's rule lookups fall through
+# to `unreachable`. Measured on production 2026-10-09: enabling VPN failover
+# through this screen with three healthy tunnels left the whole US half with no
+# route for ~2.5 minutes, until the routes were added by hand and mwan3 rebuilt.
+#
+# Only a tunnel whose route is MISSING is touched, so an ordinary settings edit
+# on a working setup changes nothing. `mwan3 ifup` rebuilds just that one
+# interface's table and rules; it does not restart mwan3.
+reconcile_vpn_routes() {
+	local sec dev
+	[ "$(uci -q get wansentry.vpn.enabled)" = 1 ] || return 0
+	for sec in $(uci -q show mwan3 | sed -n "s/^mwan3\.\([^.]*\)\.wansentry_vpn='1'$/\1/p"); do
+		[ "$(ifstatus "$sec" 2>/dev/null | jsonfilter -e '@.up')" = true ] || continue
+		dev=$(ifstatus "$sec" 2>/dev/null | jsonfilter -e '@.l3_device')
+		[ -n "$dev" ] || continue
+		ip route show default dev "$dev" 2>/dev/null | grep -q . && continue
+		ACTION=ifup INTERFACE="$sec" DEVICE="$dev" sh /etc/hotplug.d/iface/14-wansentry-vpnroute
+		mwan3_armed && mwan3 ifup "$sec" >/dev/null 2>&1
+		logger -t wansentry "vpn: $sec ($dev) was up without a default route; added, mwan3 table rebuilt"
+	done
+}
+
 start_service() {
 	reconcile
+	reconcile_vpn_routes
+	reconcile_cron
 }
 
 reload_service() {
 	reconcile
+	reconcile_vpn_routes
+	reconcile_cron
 }
 
 service_triggers() {

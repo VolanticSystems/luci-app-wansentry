@@ -1,0 +1,36 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 VolanticSystems
+#
+# Upgrades from a wansentry without VPN failover keep their /etc/config/wansentry
+# (package managers never overwrite a modified config), so it has no `vpn`
+# section and the settings screen would have nothing to edit. Add it, switched
+# off, exactly as a fresh install ships it. Never touches an existing section.
+
+if ! uci -q get wansentry.notify >/dev/null; then
+	uci -q batch <<'EOF'
+set wansentry.notify=notify
+set wansentry.notify.enabled='0'
+set wansentry.notify.port='587'
+set wansentry.notify.tls='1'
+set wansentry.notify.daily='1'
+set wansentry.notify.daily_hour='8'
+commit wansentry
+EOF
+fi
+
+uci -q get wansentry.vpn >/dev/null && exit 0
+
+uci -q batch <<'EOF'
+set wansentry.vpn=vpn
+set wansentry.vpn.enabled='0'
+set wansentry.vpn.killswitch='1'
+add_list wansentry.vpn.track_ip='1.1.1.1'
+add_list wansentry.vpn.track_ip='8.8.8.8'
+set wansentry.vpn.interval='5'
+set wansentry.vpn.down='3'
+set wansentry.vpn.up='3'
+commit wansentry
+EOF
+
+exit 0

@@ -255,7 +255,7 @@ assert_teardown() { # assert_teardown <description>
 # failure is dangerous in exactly this state and harmless in the other one.
 arm() {
 	uci commit mwan3
-	uci set wansentry.main.enabled=0
+	uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=0
 	uci commit wansentry
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 }

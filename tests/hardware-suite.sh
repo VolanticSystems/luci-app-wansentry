@@ -327,7 +327,7 @@ test_ownership() {
 		uci set mwan3.hand_m=member; uci set mwan3.hand_m.interface=wan
 		uci set mwan3.hand_p=policy; uci add_list mwan3.hand_p.use_member=hand_m
 		uci commit mwan3
-		uci set wansentry.main.enabled=0; uci commit wansentry
+		uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=0; uci commit wansentry
 		/etc/init.d/mwan3 enable >/dev/null 2>&1
 		/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	}
@@ -342,7 +342,7 @@ test_ownership() {
 	wipe_mwan3
 	uci set mwan3.mynotify=notify; uci set mwan3.mynotify.enabled=1
 	uci commit mwan3
-	uci set wansentry.main.enabled=0; uci commit wansentry
+	uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=0; uci commit wansentry
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	reconcile >/dev/null
@@ -358,14 +358,28 @@ test_ownership() {
 	# the gate exists to catch. If this stops failing to act, the ownership gate
 	# has become "never touch anything", which is a different bug.
 	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
-	uci set wansentry.main.enabled=0; uci commit wansentry
+	uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=0; uci commit wansentry
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	reconcile >/dev/null
 	chk "config wansentry OWNS, with enabled=0: mwan3 IS torn down" "YES" "$(tore_down)"
 
+	# VPN failover lives in the same mwan3, so WAN failover off with VPN
+	# failover on must KEEP mwan3. Measured 2026-10-08 before the fix: the
+	# reconciler read only main.enabled and stopped mwan3 on the next reload
+	# trigger, leaving every tunnel untracked and the killswitch policy gone.
+	#
+	# SABOTAGE: delete the vpn_enabled lines in reconcile(). This goes red.
+	wipe_mwan3; own_iface wan 1.1.1.1; own_policy wan; uci commit mwan3
+	uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=1; uci commit wansentry
+	/etc/init.d/mwan3 enable >/dev/null 2>&1
+	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
+	reconcile >/dev/null
+	chk "WAN failover off, VPN failover on: mwan3 is NOT torn down" "NO" "$(tore_down)"
+	uci set wansentry.vpn.enabled=0; uci commit wansentry
+
 	wipe_mwan3; uci commit mwan3
-	uci set wansentry.main.enabled=0; uci commit wansentry
+	uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=0; uci commit wansentry
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	/etc/init.d/mwan3.real restart >/dev/null 2>&1; sleep 15
 	reconcile >/dev/null
@@ -467,7 +481,7 @@ test_security() {
 	uci set mwan3.hand_m=member; uci set mwan3.hand_m.interface=wan
 	uci set mwan3.hand_p=policy; uci add_list mwan3.hand_p.use_member=hand_m
 	uci commit mwan3
-	uci set wansentry.main.enabled=0; uci commit wansentry
+	uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=0; uci commit wansentry
 	cp /etc/config/mwan3 "$BK/hand"
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	mwan3_up; sleep 18
@@ -498,7 +512,7 @@ test_security() {
 	# symlink written during the apply window survives, because UCI rollback
 	# does not cover it. This one SHOULD be reconciled down.
 	wipe_mwan3; uci commit mwan3
-	uci set wansentry.main.enabled=0; uci commit wansentry
+	uci set wansentry.main.enabled=0; uci set wansentry.vpn=vpn; uci set wansentry.vpn.enabled=0; uci commit wansentry
 	/etc/init.d/mwan3 enable >/dev/null 2>&1
 	mwan3_up; sleep 15
 	/etc/init.d/wansentry start >/dev/null 2>&1; sleep 5

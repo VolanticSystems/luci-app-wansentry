@@ -50,6 +50,16 @@ var OWNER_OPT      = 'wansentry',
 var PBR_PREFIX = 'wansentry_pbr',
     PBR_MAX    = 99;
 
+/* VPN failover (docs/DESIGN.md §16). The tunnels are mwan3 interfaces like the
+ * uplinks, marked with VPN_OPT so the router-side hotplug scripts can tell them
+ * apart; each gets a member at metric = its position, and one policy whose
+ * last resort is the killswitch. 'wansentry_vpn' is 13 characters, inside
+ * mwan3's silent 15-character limit on policy names. */
+var VPN_POLICY        = 'wansentry_vpn',
+    VPN_MEMBER_PREFIX = 'wansentry_tun',
+    VPN_OPT           = 'wansentry_vpn',
+    VPN_MAX           = 9;
+
 var MANAGED_TYPES = [ 'interface', 'member', 'policy', 'rule' ];
 
 /* The mwan3 package's shipped /etc/config/mwan3 (verified against
@@ -168,8 +178,53 @@ function normalize(raw) {
 		 * interval, otherwise a slow probe and the next check overlap. */
 		timeout:  clamp(Math.min(4, parseInt(interval, 10) - 1), 1, 10, 2),
 		failback: g('failback', '1') === '1',
-		flush:    g('flush_conntrack', '1') === '1'
+		flush:    g('flush_conntrack', '1') === '1',
+		vpn:      normalizeVpn(raw)
 	};
+}
+
+/* The VPN half. Its own timings, deliberately tighter than the WAN defaults:
+ * a tunnel is cheap to probe and the US half of the LAN is dark until it is
+ * declared dead. Measured on the bench (VPN-FAILOVER-BENCH-2026-10-08): with a
+ * 4 s per-probe timeout and two targets, each failing check costs ~13 s and
+ * detection took 38 s; with timeout 2 and failure_interval 2 it is ~17 s, and
+ * still six consecutive lost probes on a 115 ms transatlantic link. */
+function normalizeVpn(raw) {
+	var g = function(opt, def) {
+		var v = raw[opt];
+
+		return (v == null || v === '') ? def : v;
+	};
+
+	var interval = clamp(g('vpn_interval', '5'), 2, 3600, 5);
+
+	return {
+		enabled:   g('vpn_enabled', '0') === '1',
+		/* Ordered: the first tunnel carries traffic while it is healthy, the
+		 * rest are tried in turn. Same trim-and-drop-empties as track_ip, for
+		 * the same reason. */
+		tunnels:   L.toArray(raw.vpn_tunnel)
+		             .map(function(v) { return String(v == null ? '' : v).trim(); })
+		             .filter(function(v) { return v.length > 0; }),
+		track_ip:  L.toArray(raw.vpn_track_ip)
+		             .map(function(v) { return String(v == null ? '' : v).trim(); })
+		             .filter(function(v) { return v.length > 0; }),
+		interval:  interval,
+		timeout:   clamp(Math.min(2, parseInt(interval, 10) - 1), 1, 10, 2),
+		failure_interval: clamp(Math.min(2, parseInt(interval, 10)), 1, 3600, 2),
+		down:      clamp(g('vpn_down', '3'), 1, 100, 3),
+		up:        clamp(g('vpn_up', '3'), 1, 100, 3),
+		/* On: when every tunnel is dead the traffic they carry has no route at
+		 * all (mwan3 last_resort unreachable). Off: it falls through to the
+		 * normal routing table, i.e. leaves by the ordinary internet. On is the
+		 * default because the usual reason to send traffic through a VPN is
+		 * that it must not leave any other way. */
+		killswitch: g('vpn_killswitch', '1') === '1'
+	};
+}
+
+function vpnActive(s) {
+	return !!(s && s.vpn && s.vpn.enabled && s.vpn.tunnels.length);
 }
 
 /* Reads /etc/config/wansentry through uci (loaded or pending values). */
@@ -183,7 +238,14 @@ function settings() {
 		down:            uci.get('wansentry', 'main', 'down'),
 		up:              uci.get('wansentry', 'main', 'up'),
 		failback:        uci.get('wansentry', 'main', 'failback'),
-		flush_conntrack: uci.get('wansentry', 'main', 'flush_conntrack')
+		flush_conntrack: uci.get('wansentry', 'main', 'flush_conntrack'),
+		vpn_enabled:     uci.get('wansentry', 'vpn', 'enabled'),
+		vpn_tunnel:      uci.get('wansentry', 'vpn', 'tunnel'),
+		vpn_track_ip:    uci.get('wansentry', 'vpn', 'track_ip'),
+		vpn_interval:    uci.get('wansentry', 'vpn', 'interval'),
+		vpn_down:        uci.get('wansentry', 'vpn', 'down'),
+		vpn_up:          uci.get('wansentry', 'vpn', 'up'),
+		vpn_killswitch:  uci.get('wansentry', 'vpn', 'killswitch')
 	});
 }
 
@@ -277,7 +339,7 @@ function pbrClaims() {
 		/* Cross-product, because each mwan3 rule holds one address per side. */
 		(src.length ? src : [ null ]).forEach(function(s) {
 			(dst.length ? dst : [ null ]).forEach(function(d) {
-				var c = { policy: name };
+				var c = { policy: name, iface: p.interface || '' };
 
 				if (s != null) c.src_ip  = s;
 				if (d != null) c.dest_ip = d;
@@ -293,16 +355,25 @@ function pbrClaims() {
 		});
 	});
 
-	/* Deterministic order, so the same pbr config always produces the same
-	 * mwan3 file and a re-apply stays a no-op. uci section order is stable but
-	 * the cross-product above is not something a reader can predict, and an
-	 * unstable order would churn the config on every apply. */
-	claims.sort(function(a, b) {
-		var ka = [ a.src_ip, a.dest_ip, a.proto, a.src_port, a.dest_port ].join('|'),
-		    kb = [ b.src_ip, b.dest_ip, b.proto, b.src_port, b.dest_port ].join('|');
-
-		return (ka < kb) ? -1 : (ka > kb ? 1 : 0);
-	});
+	/* ORDER: pbr's own, NOT sorted. This used to sort the claims by address so
+	 * that reordering /etc/config/pbr could not change the output, which was
+	 * harmless while every claim produced the same `use_policy default`: order
+	 * between identical verdicts cannot matter.
+	 *
+	 * VPN failover gives claims DIFFERENT verdicts, and then order is meaning.
+	 * pbr is first-match in config order (its pbr_prerouting chain lists the
+	 * policies exactly as configured and each ends in a goto), and mwan3 is
+	 * first-match in file order. The reference router has
+	 *
+	 *     Local_Exception  src upper /25  dest DMZ  -> wan       (first)
+	 *     To_Tunnel          src upper /25            -> vpnusa
+	 *
+	 * Sorted by address, '…/25|' sorts before '…/25|DMZ', so the tunnel rule
+	 * would come first and swallow the DMZ traffic the first policy exists to
+	 * keep local. Mirroring pbr's order is the only ordering that means the same
+	 * thing to both engines. It is still deterministic: the same /etc/config/pbr
+	 * always produces the same mwan3 file, and the cross-product inside one
+	 * policy is a fixed nested loop. */
 
 	if (claims.length > PBR_MAX)
 		claims = claims.slice(0, PBR_MAX);
@@ -352,8 +423,19 @@ function isV6Addr(a) {
 	return typeof a === 'string' && a.indexOf(':') !== -1;
 }
 
-/* The mwan3 rule sections that keep pbr's policies working. */
-function pbrRules(family) {
+/* Does this pbr claim send its traffic into one of the VPN failover tunnels?
+ * Then the generated rule hands it to the VPN policy instead of excluding it.
+ * IPv4 only: the tunnels are tracked as ipv4 interfaces, and a v6 claim sent to
+ * a v4-only policy would be blackholed rather than routed. */
+function vpnClaim(c, s, family) {
+	return family !== 'ipv6' && vpnActive(s) && s.vpn.tunnels.indexOf(c.iface) >= 0;
+}
+
+/* The mwan3 rule sections that keep pbr's policies working, and, with VPN
+ * failover on, the ones that move pbr's tunnel traffic onto the VPN policy.
+ * `s` is optional: without it every claim is a plain exclusion, exactly as
+ * before VPN failover existed. */
+function pbrRules(family, s) {
 	return pbrClaims().claims.filter(function(c) {
 		/* A claim naming a v6 address belongs only in the v6 pass, and a v4
 		 * one only in the v4 pass.
@@ -386,8 +468,21 @@ function pbrRules(family) {
 
 		/* 'default' is mwan3's own escape hatch: route by the main table and
 		 * stamp only the no-op mark. It is not a policy wansentry defines, so
-		 * it cannot drift when the failover policy is rewritten. */
-		o.use_policy = 'default';
+		 * it cannot drift when the failover policy is rewritten.
+		 *
+		 * A claim pointing at a failover tunnel goes to the VPN policy instead.
+		 * pbr's own policy stays in place and stays enabled: mwan3's rules are
+		 * consulted ~28000 priorities earlier and win while mwan3 runs, and if
+		 * mwan3 is ever stopped pbr's strict enforcement is still a killswitch
+		 * underneath. Belt and braces, measured on the bench. */
+		o.use_policy = vpnClaim(c, s, family) ? VPN_POLICY : 'default';
+
+		/* mwan3 stickiness off for tunnel traffic: when the primary tunnel
+		 * recovers, new connections move back at once. Existing ones stay on
+		 * the backup tunnel they started on, which still works. */
+		if (o.use_policy === VPN_POLICY)
+			o.sticky = '0';
+
 		o[OWNER_OPT] = '1';
 
 		/* THE FAMILY SUFFIX IS NOT COSMETIC. Both passes index from 1, so
@@ -540,6 +635,10 @@ function classify(networks, chosen, showAll) {
 		return {
 			name: n.getName(),
 			role: role,
+			/* `base` is the label without the uplink-picker note. The VPN
+			 * failover tunnel picker offers exactly the interfaces this note
+			 * calls ineligible, so it must not repeat "cannot be one" there. */
+			base: label,
 			label: NOTE[role] ? '%s [%s]'.format(label, NOTE[role]) : label
 		};
 	});
@@ -718,30 +817,119 @@ function desired(s) {
 	 * The v6 catch-all goes last for the same reason, after the v6 exclusions.
 	 * mwan3 matches within a family, so the two catch-alls do not shadow one
 	 * another. */
-	var out = [
-		{ name: s.primary, type: 'interface', options: trackOptions(s, 'ipv4') },
-		{ name: s.backup,  type: 'interface', options: trackOptions(s, 'ipv4') }
-	];
+	/* The WAN half is optional now that the package does two jobs: someone who
+	 * wants only VPN failover should not be made to pick two uplinks. With no
+	 * uplinks chosen there are no WAN sections and no catch-all rule, so
+	 * ordinary traffic is not touched by mwan3 at all. */
+	var wanOn = !!(s.primary && s.backup);
 
-	if (dual) {
+	var out = [];
+
+	if (wanOn) {
+		out.push({ name: s.primary, type: 'interface', options: trackOptions(s, 'ipv4') });
+		out.push({ name: s.backup,  type: 'interface', options: trackOptions(s, 'ipv4') });
+	}
+
+	if (wanOn && dual) {
 		out.push({ name: p6, type: 'interface', options: trackOptions(s, 'ipv6') });
 		out.push({ name: b6, type: 'interface', options: trackOptions(s, 'ipv6') });
 	}
 
-	out.push({ name: MEMBER_PRIMARY, type: 'member', options: member(s.primary, '1') });
-	out.push({ name: MEMBER_BACKUP,  type: 'member', options: member(s.backup,  '2') });
+	if (wanOn) {
+		out.push({ name: MEMBER_PRIMARY, type: 'member', options: member(s.primary, '1') });
+		out.push({ name: MEMBER_BACKUP,  type: 'member', options: member(s.backup,  '2') });
+	}
 
-	if (dual) {
+	if (wanOn && dual) {
 		out.push({ name: MEMBER_PRIMARY6, type: 'member', options: member(p6, '1') });
 		out.push({ name: MEMBER_BACKUP6,  type: 'member', options: member(b6, '2') });
 	}
 
-	out.push({ name: POLICY, type: 'policy', options: policy });
+	if (wanOn)
+		out.push({ name: POLICY, type: 'policy', options: policy });
 
-	out = out.concat(pbrRules('ipv4'), [ { name: RULE, type: 'rule', options: rule } ]);
+	out = out.concat(vpnSections(s));
 
-	if (dual)
-		out = out.concat(pbrRules('ipv6'), [ { name: RULE6, type: 'rule', options: rule6 } ]);
+	out = out.concat(pbrRules('ipv4', s));
+
+	if (wanOn)
+		out.push({ name: RULE, type: 'rule', options: rule });
+
+	if (wanOn && dual)
+		out = out.concat(pbrRules('ipv6', s), [ { name: RULE6, type: 'rule', options: rule6 } ]);
+
+	return out;
+}
+
+/* Tracking for a tunnel. Same shape as an uplink's, three differences:
+ *
+ *   - its own, tighter timings (normalizeVpn), measured on the bench;
+ *   - no flush_conntrack. mwan3's flush is GLOBAL: a tunnel dying would drop
+ *     every connection on the router, the half of the LAN that never touches
+ *     the tunnel included. /etc/hotplug.d/iface/18-wansentry-vpnflush forgets
+ *     only the connections pinned to the dead tunnel instead. Without either,
+ *     a live connection stays on the dead tunnel for ever (bench test 5);
+ *   - the VPN_OPT marker, which is how the router-side scripts recognise a
+ *     tunnel without parsing the wansentry config. */
+function vpnTrackOptions(v) {
+	var o = {
+		enabled:           '1',
+		family:            'ipv4',
+		initial_state:     'offline',
+		track_method:      'ping',
+		track_ip:          v.track_ip.slice(),
+		reliability:       '1',
+		count:             '1',
+		timeout:           v.timeout,
+		interval:          v.interval,
+		failure_interval:  v.failure_interval,
+		recovery_interval: v.interval,
+		down:              v.down,
+		up:                v.up
+	};
+
+	o[VPN_OPT] = '1';
+	o[OWNER_OPT] = '1';
+
+	return o;
+}
+
+function vpnMemberName(i) {
+	return VPN_MEMBER_PREFIX + (i + 1);
+}
+
+/* The VPN half: one tracked interface per tunnel, a member per tunnel at
+ * metric = its position in the list, and one policy over all of them. Nothing
+ * at all when VPN failover is off, so a router that never uses it gets exactly
+ * the configuration it got before the feature existed. */
+function vpnSections(s) {
+	if (!vpnActive(s))
+		return [];
+
+	var v = s.vpn, out = [];
+
+	v.tunnels.forEach(function(t) {
+		out.push({ name: t, type: 'interface', options: vpnTrackOptions(v) });
+	});
+
+	v.tunnels.forEach(function(t, i) {
+		var m = { interface: t, metric: String(i + 1), weight: '1' };
+
+		m[OWNER_OPT] = '1';
+		out.push({ name: vpnMemberName(i), type: 'member', options: m });
+	});
+
+	var pol = {
+		use_member: v.tunnels.map(function(t, i) { return vpnMemberName(i); }),
+		/* THE KILLSWITCH. 'unreachable' is mwan3's own default and the right
+		 * one here: with every tunnel dead, traffic that must not leave by the
+		 * ordinary internet gets no route at all. Bench test 3: zero
+		 * connections from the tunnel range SNATed to a WAN address. */
+		last_resort: v.killswitch ? 'unreachable' : 'default'
+	};
+
+	pol[OWNER_OPT] = '1';
+	out.push({ name: VPN_POLICY, type: 'policy', options: pol });
 
 	return out;
 }
@@ -789,24 +977,67 @@ function audit() {
  * wansentry additionally reserves its own wansentry_* namespace so a chosen
  * interface can never collide with a generated member/policy/rule name. */
 var RESERVED = { 'wansentry_primary': 1, 'wansentry_backup': 1,
-                 'wansentry_fail': 1, 'wansentry_def': 1 };
+                 'wansentry_fail': 1, 'wansentry_def': 1,
+                 'wansentry_vpn': 1 };
 
 function validName(name) {
 	return /^[A-Za-z0-9_]+$/.test(name) && !/^wansentry_/.test(name) && !RESERVED[name];
 }
 
 function validate(s) {
-	if (!s.primary || !s.backup)
+	var wanAny = !!(s.primary || s.backup),
+	    vpnOn  = !!(s.vpn && s.vpn.enabled);
+
+	if (!wanAny && !vpnOn)
 		return _('Select a primary and a backup interface first.');
 
-	if (s.primary === s.backup)
-		return _('The primary and the backup interface must be different.');
+	if (wanAny) {
+		if (!s.primary || !s.backup)
+			return _('Select a primary and a backup interface first.');
 
-	if (!validName(s.primary) || !validName(s.backup))
-		return _('Interface names may use only letters, digits and underscore, and may not begin with "wansentry_".');
+		if (s.primary === s.backup)
+			return _('The primary and the backup interface must be different.');
 
-	if (!s.track_ip.length)
-		return _('At least one health-check host is required.');
+		if (!validName(s.primary) || !validName(s.backup))
+			return _('Interface names may use only letters, digits and underscore, and may not begin with "wansentry_".');
+
+		if (!s.track_ip.length)
+			return _('At least one health-check host is required.');
+	}
+
+	if (vpnOn) {
+		var t = s.vpn.tunnels;
+
+		/* One tunnel is not failover, it is a tunnel. Refusing is kinder than
+		 * generating a "policy" that can only ever fall to its last resort. */
+		if (t.length < 2)
+			return _('VPN failover needs at least two tunnels, in the order they should be used.');
+
+		if (t.length > VPN_MAX)
+			return _('VPN failover supports at most %d tunnels.').format(VPN_MAX);
+
+		if (t.some(function(x, i) { return t.indexOf(x) !== i; }))
+			return _('Each tunnel may appear only once in the VPN failover list.');
+
+		if (!t.every(validName))
+			return _('Interface names may use only letters, digits and underscore, and may not begin with "wansentry_".');
+
+		/* A tunnel cannot also be an uplink: the same mwan3 interface section
+		 * would be written twice with two different tracking configurations,
+		 * and the second would silently win. */
+		if (t.indexOf(s.primary) >= 0 || t.indexOf(s.backup) >= 0)
+			return _('An interface cannot be both a WAN uplink and a VPN failover tunnel.');
+
+		if (!s.vpn.track_ip.length)
+			return _('VPN failover needs at least one health-check host.');
+
+		/* The traffic to fail over is whatever pbr already sends into these
+		 * tunnels. With no such pbr policy there is nothing to move, and an
+		 * enabled screen that moves nothing is the silent non-failover this
+		 * package exists to prevent. */
+		if (!pbrClaims().claims.some(function(c) { return t.indexOf(c.iface) >= 0; }))
+			return _('No enabled pbr policy sends traffic into any of these tunnels, so VPN failover would have nothing to move. Point a pbr policy at the first tunnel, then come back.');
+	}
 
 	/* No timeout-vs-interval guard here. normalize() derives timeout as
 	 * clamp(min(4, interval - 1), 1, 10, 2) from an interval already clamped to
@@ -989,8 +1220,11 @@ return baseclass.extend({
 	MEMBER_PRIMARY: MEMBER_PRIMARY,
 	MEMBER_BACKUP: MEMBER_BACKUP,
 	PBR_PREFIX: PBR_PREFIX,
+	VPN_POLICY: VPN_POLICY,
+	VPN_OPT: VPN_OPT,
 
 	settings: settings,
+	vpnActive: vpnActive,
 	normalize: normalize,
 	desired: desired,
 	audit: audit,

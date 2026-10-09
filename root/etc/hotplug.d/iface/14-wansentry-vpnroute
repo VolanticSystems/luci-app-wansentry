@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 VolanticSystems
+#
+# VPN failover: give each failover tunnel a default route of its own.
+#
+# mwan3 builds an interface's routing table by COPYING that device's routes out
+# of the main table (mwan3_create_iface_route). A tunnel that installs no
+# default route of its own -- OpenVPN with route-nopull, which is how a tunnel
+# used only for policy routing is normally set up, or WireGuard without 0/0 --
+# therefore gets an empty mwan3 table and can never carry traffic, however
+# healthy its tracking says it is. That is the "mwan3 can't use my OpenVPN
+# interface" problem in every forum thread about it.
+#
+# The fix is a default route through the tunnel in the MAIN table at a high
+# metric, so the ordinary default route still wins for everything mwan3 does
+# not steer. Doing it here rather than asking the user to add
+# `route 0.0.0.0 0.0.0.0 vpn_gateway N` to each tunnel's config means any tunnel
+# type works unedited. A tunnel is a point-to-point device, so a device route
+# needs no gateway address.
+#
+# Numbered 14 so it runs BEFORE mwan3's own 15-mwan3 hotplug: the route is
+# already in the main table when mwan3 copies routes for this interface.
+# Measured on the bench 2026-10-08: tables 3/4/5 each held their tunnel's
+# default, and failover timings were identical to the hand-added routes.
+#
+# Recognised by the marker the generator writes onto tunnel interfaces
+# (`option wansentry_vpn '1'`); every other interface is ignored.
+
+[ "$ACTION" = ifup ] || exit 0
+[ -n "$INTERFACE" ] && [ -n "$DEVICE" ] || exit 0
+[ "$(uci -q get "mwan3.$INTERFACE.wansentry_vpn")" = 1 ] || exit 0
+
+# Metric 200 + the tunnel's position in the failover list (its member metric),
+# so the routes are distinct, ordered, and well clear of any uplink's metric.
+pos=$(uci -q show mwan3 | sed -n "s/^mwan3\.\([^.]*\)\.interface='$INTERFACE'$/\1/p" | head -1)
+pos=$(uci -q get "mwan3.$pos.metric" 2>/dev/null)
+case "$pos" in ''|*[!0-9]*) pos=9 ;; esac
+
+ip route replace default dev "$DEVICE" metric $((200 + pos)) &&
+	logger -t wansentry "vpn: default route through $DEVICE ($INTERFACE) at metric $((200 + pos))"

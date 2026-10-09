@@ -9,6 +9,7 @@
 'require uci';
 'require form';
 'require network';
+'require fs';
 'require view.wansentry.common as ws';
 'require view.wansentry.generator as gen';
 
@@ -35,8 +36,8 @@ function statusOf(status, name) {
  * reports this by reading back its own iptables chains, so an empty result
  * means the policy is not installed at all, the service is stopped, or the
  * configuration has never been applied. */
-function activeUplink(status) {
-	var pol = status && status.policies && status.policies.ipv4 && status.policies.ipv4[gen.POLICY];
+function activeUplink(status, policyName) {
+	var pol = status && status.policies && status.policies.ipv4 && status.policies.ipv4[policyName || gen.POLICY];
 
 	if (!Array.isArray(pol) || !pol.length)
 		return null;
@@ -170,14 +171,54 @@ return view.extend({
 		else
 			summary = _('Traffic is going out over %s.').format(active);
 
-		return E('div', {}, [
-			E('div', { 'class': 'ws-sub', 'style': 'margin:0 0 .8em' }, [ summary ]),
-			E('div', { 'class': 'ws-lanes' }, [
-				lane(_('primary'), s.primary, statusOf(status, s.primary), active && active === s.primary),
-				lane(_('backup'), s.backup, statusOf(status, s.backup), active && active === s.backup)
-			]),
+		var parts = [];
+
+		if (s.primary || s.backup || !gen.vpnActive(s))
+			parts.push(
+				E('div', { 'class': 'ws-sub', 'style': 'margin:0 0 .8em' }, [ summary ]),
+				E('div', { 'class': 'ws-lanes' }, [
+					lane(_('primary'), s.primary, statusOf(status, s.primary), active && active === s.primary),
+					lane(_('backup'), s.backup, statusOf(status, s.backup), active && active === s.backup)
+				]));
+
+		if (gen.vpnActive(s))
+			parts.push(this.renderVpnStatus(status, s));
+
+		parts.push(
 			E('h4', { 'style': 'margin:1.2em 0 .4em;font-size:12px' }, [ _('Recent uplink transitions') ]),
-			eventList(events)
+			eventList(events));
+
+		return E('div', {}, parts);
+	},
+
+	/* One lane per tunnel, in failover order. "Carrying traffic" is read back
+	 * from mwan3's live policy, the same authority the WAN lanes use; an empty
+	 * policy with every tunnel down is the killswitch doing its job, and the
+	 * summary says so in those words rather than leaving a blank. */
+	renderVpnStatus: function(status, s) {
+		var tunnels = s.vpn.tunnels,
+		    activeT = activeUplink(status, gen.VPN_POLICY),
+		    vpol = status && status.policies && status.policies.ipv4 && status.policies.ipv4[gen.VPN_POLICY],
+		    summary;
+
+		if (!status)
+			summary = _('mwan3 is not answering on ubus.');
+		else if (activeT)
+			summary = _('Tunnel traffic is going out over %s.').format(activeT);
+		else if (Array.isArray(vpol))
+			summary = s.vpn.killswitch
+				? _('Every tunnel is down. The killswitch is holding: tunnel traffic has no route until one recovers.')
+				: _('Every tunnel is down. Tunnel traffic is falling back to the ordinary internet (killswitch off).');
+		else
+			summary = _('No VPN failover policy installed: mwan3 is not running this configuration.');
+
+		return E('div', { 'style': 'margin-top:1.2em' }, [
+			E('h4', { 'style': 'margin:0 0 .4em;font-size:12px' }, [ _('VPN failover') ]),
+			E('div', { 'class': 'ws-sub', 'style': 'margin:0 0 .8em' }, [ summary ]),
+			E('div', { 'class': 'ws-lanes' }, tunnels.map(function(t, i) {
+				return lane(i === 0 ? _('first choice') : _('backup %d').format(i), t,
+				            statusOf(status, t), activeT && activeT === t);
+			}))
 		]);
 	},
 
@@ -227,7 +268,9 @@ return view.extend({
 			return out;
 		}
 
-		if (!s.enabled)
+		/* mwan3 runs when EITHER half is on (init.d/wansentry reconcile()), so
+		 * "the service is stopped" is only true when both are off. */
+		if (!s.enabled && !gen.vpnActive(s))
 			out.push(ws.note('warn', _('Failover is switched off'), [
 				E('span', {}, [ _('The generated mwan3 interfaces are written with tracking disabled and the mwan3 service is stopped and disabled on apply, so routing behaves exactly as it did before wansentry was installed. Turn on "Enable failover" below to arm it.') ])
 			]));
@@ -380,7 +423,7 @@ return view.extend({
 		var s = m.section(form.NamedSection, 'main', 'wansentry');
 		var o;
 
-		o = s.option(form.Flag, 'enabled', _('Enable failover'),
+		o = s.option(form.Flag, 'enabled', _('Enable WAN failover'),
 			_('Off: the generated mwan3 interfaces are written with tracking disabled and the mwan3 service is stopped and disabled, so this router routes exactly as it did before. On: mwan3 is enabled and started with the configuration below.'));
 		o.rmempty = false;
 
@@ -487,6 +530,128 @@ return view.extend({
 			_('Recommended. When an uplink changes state the kernel still holds conntrack entries pinned to the old gateway, and TCP treats the resulting ICMP unreachables as a soft error, so clients retransmit into a dead path for minutes instead of reconnecting. Flushing forces every connection to be re-established over the surviving uplink. The cost is that connections on the healthy uplink are dropped too, because mwan3\'s flush is global rather than per-uplink.'));
 		o.rmempty = false;
 
+		/* ------------------------------------------------- VPN failover */
+
+		var vs = m.section(form.NamedSection, 'vpn', 'vpn', _('VPN failover'),
+			_('For traffic that policy-based routing (pbr) already sends into a VPN tunnel: when that tunnel dies, move the traffic to the next tunnel in the list, and if they are all dead, block it rather than let it out by the ordinary internet. Which traffic goes into a tunnel stays pbr\'s decision; this only decides which tunnel. The tunnels must already exist and be connected; wansentry does not create them.'));
+
+		o = vs.option(form.Flag, 'enabled', _('Enable VPN failover'),
+			_('Independent of the WAN failover above: either, both, or neither can be on.'));
+		o.rmempty = false;
+
+		/* Every option below depends on this flag, and LuCI DELETES a hidden
+		 * option's value on save unless it is marked `retain`. Without it,
+		 * switching VPN failover off erased the tunnel list, the health-check
+		 * hosts and the timings, and switching it back on showed them empty
+		 * (found on the sandbox 2026-10-09). The WAN half has no depends, so it
+		 * never had this problem. */
+
+		var tunnelChoices = classified.filter(function(c) { return c.role === 'tunnel'; });
+
+		o = vs.option(form.DynamicList, 'tunnel', _('Tunnels, in order'),
+			_('The first tunnel carries the traffic while it is healthy; the others are tried in the order listed. At least two. Each needs its own health check through the tunnel, so pick hosts on the far side that answer ping.'));
+		tunnelChoices.forEach(function(c) { o.value(c.name, c.base); });
+		o.depends('enabled', '1');
+		o.retain = true;
+
+		o = vs.option(form.DynamicList, 'track_ip', _('Health-check hosts'),
+			_('Pinged through each tunnel. Two hosts on different operators, as for the uplinks: a tunnel is up while any one answers.'));
+		o.datatype = 'ip4addr("nomask")';
+		o.depends('enabled', '1');
+		o.retain = true;
+
+		o = vs.option(form.Value, 'interval', _('Check interval'),
+			_('Seconds between probes while a tunnel is healthy. Once a probe fails, the next ones come every 2 seconds, so a dead tunnel is declared in roughly 15-20 seconds at the defaults.'));
+		o.datatype = 'range(2,3600)';
+		o.placeholder = '5';
+		o.depends('enabled', '1');
+		o.retain = true;
+
+		o = vs.option(form.Value, 'down', _('Failure threshold'),
+			_('Consecutive failed checks before a tunnel is declared dead.'));
+		o.datatype = 'range(1,100)';
+		o.placeholder = '3';
+		o.depends('enabled', '1');
+		o.retain = true;
+
+		o = vs.option(form.Value, 'up', _('Recovery threshold'),
+			_('Consecutive successful checks before a tunnel is used again.'));
+		o.datatype = 'range(1,100)';
+		o.placeholder = '3';
+		o.depends('enabled', '1');
+		o.retain = true;
+
+		o = vs.option(form.Flag, 'killswitch', _('Block tunnel traffic when every tunnel is down'),
+			_('On (recommended): traffic pbr sends into a tunnel gets no route at all while every tunnel is dead, so it can never leave by the ordinary internet. Off: it falls back to the ordinary internet until a tunnel recovers.'));
+		o.default = '1';
+		o.rmempty = false;
+		o.depends('enabled', '1');
+		o.retain = true;
+
+		/* -------------------------------------------------- notifications */
+
+		var ns = m.section(form.NamedSection, 'notify', 'notify', _('Email notifications'),
+			_('A failover that works is quiet: the backup carries the traffic and nothing looks broken, so the first you hear of a dead primary is when the backup dies too. This sends an email whenever an uplink or tunnel goes down or comes back, and a daily report of every path, so a backup that died weeks ago is noticed before it is needed.'));
+
+		o = ns.option(form.Flag, 'enabled', _('Send notifications'));
+		o.rmempty = false;
+
+		o = ns.option(form.Value, 'to', _('Send to'));
+		o.datatype = 'string';
+		o.placeholder = 'you@example.com';
+
+		o = ns.option(form.Value, 'from', _('Send as'),
+			_('The From address. Many mail servers require it to match the login.'));
+		o.placeholder = 'router@example.com';
+
+		o = ns.option(form.Value, 'server', _('SMTP server'));
+		o.datatype = 'host';
+		o.placeholder = 'smtp.example.com';
+
+		o = ns.option(form.Value, 'port', _('SMTP port'),
+			_('587 for STARTTLS, 465 for implicit TLS.'));
+		o.datatype = 'port';
+		o.placeholder = '587';
+
+		o = ns.option(form.Flag, 'tls', _('Use TLS'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = ns.option(form.Value, 'username', _('SMTP login'));
+
+		o = ns.option(form.Value, 'password', _('SMTP password'),
+			_('Stored in plain text in /etc/config/wansentry, readable by anyone who can read that file. Use an account made for this.'));
+		o.password = true;
+
+		o = ns.option(form.Flag, 'daily', _('Daily report'),
+			_('One email a day listing every uplink and tunnel and whether it is up. A path that stays down shows here every day until it is fixed.'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = ns.option(form.ListValue, 'daily_hour', _('Daily report at'),
+			_('Router local time.'));
+		for (var h = 0; h < 24; h++)
+			o.value(String(h), '%02d:00'.format(h));
+		o.default = '8';
+		o.depends('daily', '1');
+		o.retain = true;
+
+		o = ns.option(form.Button, '_test', _('Test'),
+			_('Sends a test message with the saved settings, even while notifications are switched off. Save first; this uses what is on the router, not what is typed above.'));
+		o.inputtitle = _('Send test email');
+		o.inputstyle = 'action';
+		o.onclick = function() {
+			return fs.exec('/usr/libexec/wansentry/notify', [ 'test' ]).then(function(res) {
+				ui.addNotification(null, E('p', {}, [
+					(res && res.code === 0)
+						? _('Test email handed to the mail server. If it does not arrive, check the spam folder and the system log (logread -e wansentry).')
+						: _('Sending failed. The reason is in the system log: logread -e wansentry')
+				]), (res && res.code === 0) ? 'info' : 'danger');
+			}).catch(function(e) {
+				ui.addNotification(null, E('p', {}, [ e.message ]), 'danger');
+			});
+		};
+
 		return m.render().then(function(mapNode) {
 			self.map = m;
 			self.statusNode = E('div', {}, self.renderStatus(status, events));
@@ -527,9 +692,10 @@ return view.extend({
 	 * save would generate. */
 	liveSettings: function() {
 		var m = this.map;
-		var fv = function(name) {
-			var o = m && m.lookupOption ? m.lookupOption(name, 'main') : null;
-			return (o && o[0]) ? o[0].formvalue('main') : null;
+		var fv = function(name, sid) {
+			sid = sid || 'main';
+			var o = m && m.lookupOption ? m.lookupOption(name, sid) : null;
+			return (o && o[0]) ? o[0].formvalue(sid) : null;
 		};
 
 		return gen.normalize({
@@ -541,7 +707,14 @@ return view.extend({
 			down:            fv('down'),
 			up:              fv('up'),
 			failback:        fv('failback'),
-			flush_conntrack: fv('flush_conntrack')
+			flush_conntrack: fv('flush_conntrack'),
+			vpn_enabled:     fv('enabled', 'vpn'),
+			vpn_tunnel:      fv('tunnel', 'vpn'),
+			vpn_track_ip:    fv('track_ip', 'vpn'),
+			vpn_interval:    fv('interval', 'vpn'),
+			vpn_down:        fv('down', 'vpn'),
+			vpn_up:          fv('up', 'vpn'),
+			vpn_killswitch:  fv('killswitch', 'vpn')
 		});
 	},
 
@@ -559,17 +732,28 @@ return view.extend({
 	hookPreview: function() {
 		var self = this, m = this.map;
 		var opts = [ 'enabled', 'primary', 'backup', 'track_ip',
-		             'interval', 'down', 'up', 'failback', 'flush_conntrack' ];
+		             'interval', 'down', 'up', 'failback', 'flush_conntrack' ]
+		           .map(function(n) { return [ n, 'main' ]; })
+		           .concat([ 'enabled', 'tunnel', 'track_ip', 'interval', 'down', 'up', 'killswitch' ]
+		           .map(function(n) { return [ n, 'vpn' ]; }));
 		var update = function() { self.renderPreview(); };
 
-		opts.forEach(function(name) {
-			var o = m.lookupOption ? m.lookupOption(name, 'main') : null;
-			var w = (o && o[0]) ? o[0].getUIElement('main') : null;
+		opts.forEach(function(pair) {
+			var name = pair[0], sid = pair[1];
+			var o = m.lookupOption ? m.lookupOption(name, sid) : null;
+			var w = (o && o[0]) ? o[0].getUIElement(sid) : null;
 			var node = w && w.node ? w.node : null;
 
+			/* 'change' and 'keyup' cover plain inputs. LuCI's own widgets do NOT
+			 * fire 'change': a DynamicList dispatches 'cbi-dynlist-change' and a
+			 * dropdown 'cbi-dropdown-change' (read from ui.js). Listening only
+			 * for 'change' left the preview stale whenever a tunnel or a
+			 * health-check host was added or removed, which is the one edit the
+			 * preview most needs to show. Found on the bench 2026-10-08: three
+			 * tunnels added, preview still said "complete the settings". */
 			if (node) {
-				node.addEventListener('change', update);
-				node.addEventListener('keyup', update);
+				[ 'change', 'keyup', 'cbi-dynlist-change', 'cbi-dropdown-change', 'widget-change' ]
+					.forEach(function(ev) { node.addEventListener(ev, update); });
 			}
 		});
 	},

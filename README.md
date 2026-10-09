@@ -16,6 +16,18 @@ exit means the affected devices begin appearing in the wrong country.
 `wansentry` detects that arrangement, generates the mwan3 rules that prevent
 it, and tells you on screen which policies it protected and which it could not.
 
+**It also fails over between VPN tunnels.** If pbr sends some traffic into a
+tunnel, list two or more tunnels in order and that traffic moves to the next
+one when the first dies, comes back when it recovers, and is blocked outright
+while every tunnel is down (a killswitch), so it can never leak out the
+ordinary internet. Which traffic enters a tunnel stays pbr's decision. See
+[VPN failover](#vpn-failover).
+
+**And it tells you.** A failover that works is quiet, so the first you hear of
+a dead primary is usually when the backup dies too. Optional email on every
+down/up transition, plus a daily report of every path. See
+[Email notifications](#email-notifications).
+
 There is a guide to the whole subject in
 [docs/VPN-AND-POLICY-ROUTING.md](docs/VPN-AND-POLICY-ROUTING.md): how to tell
 whether your own tunnel survives a switchover, two settings that look like
@@ -219,6 +231,64 @@ tunnel survives a switchover, two settings that look like tidy-ups and are
 not, and a set of commands for measuring your own router rather than
 trusting the numbers here. The engineering rationale is in
 [docs/DESIGN.md](docs/DESIGN.md) section 11.
+
+## VPN failover
+
+For traffic that pbr already sends into a VPN tunnel. List the tunnels in the
+order they should be used; the screen generates one tracked mwan3 interface per
+tunnel, members at metric 1, 2, 3, and a policy whose last resort is
+`unreachable`. Every pbr policy that points at one of the tunnels is mirrored
+as an mwan3 rule to that policy, in pbr's own order, so a narrower pbr policy
+ahead of it (a LAN-to-LAN exception, say) still wins exactly as it does in pbr.
+pbr's policies stay enabled underneath: if mwan3 is ever stopped, pbr's strict
+enforcement is still a killswitch.
+
+Measured on a bench with three real OpenVPN tunnels to three real servers
+(`VPN-FAILOVER-BENCH-2026-10-08.md` in the parent repository), using network
+namespace clients and per-tunnel packet counters as the oracle:
+
+| fault | result |
+|---|---|
+| first tunnel's server dies | traffic on the second tunnel; ~17 s of loss |
+| second dies too | traffic on the third |
+| all three dead | tunnel traffic blocked; **zero** connections leaked out a WAN address; the rest of the LAN unaffected |
+| servers return | back on the first tunnel once it passes its recovery checks |
+| a long-lived connection across a tunnel death | survives, on the next tunnel |
+| the primary WAN dies under the tunnels | tunnels re-establish over the backup WAN by themselves; traffic back on the first tunnel in ~40 s |
+| a tunnel's OpenVPN process is killed | instant switch; back on it in ~21 s after procd restarts it |
+| reboot | everything back in under a minute, no intervention |
+
+Two things this needed that are not obvious, both handled for you:
+
+- **A tunnel with no default route of its own cannot be an mwan3 member.**
+  mwan3 builds each interface's routing table by copying that device's routes
+  out of the main table, and a tunnel set up with `route-nopull` has none, so
+  its table is empty. A hotplug script gives each failover tunnel a
+  high-metric default route in the main table (the ordinary default still
+  wins), so any tunnel type works without editing its config.
+- **Connections stay pinned to a dead tunnel.** mwan3 keeps each connection
+  on the member it started on. Without help a live connection never moves off
+  a dead tunnel. mwan3's own `flush_conntrack` would fix that globally,
+  dropping every connection on the router; instead a hook forgets only the
+  connections pinned to the tunnel that died (needs the `conntrack` package,
+  a dependency).
+
+## Email notifications
+
+Off by default. Set a recipient, an SMTP server and, if it needs one, a login,
+then press *Send test email*. With it on:
+
+- one email when any uplink or tunnel wansentry manages goes down, and one
+  when it comes back, saying what is carrying the traffic now. These follow
+  mwan3's own verdicts, so its thresholds already filter a flapping link;
+- one email at boot instead of one per path coming up;
+- a daily report of every path, at an hour you choose. A backup that died
+  weeks ago and has never been needed since shows up here, every day, until
+  it is fixed. A daily email that stops arriving is itself the alarm that the
+  mail path is broken.
+
+Sent with `msmtp` (a dependency). The SMTP password is stored in plain text in
+`/etc/config/wansentry`; use an account made for this.
 
 ## What it does not solve
 

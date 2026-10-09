@@ -1,9 +1,10 @@
 {
 	"luci-app-wansentry": {
-		"description": "Grant access to dual-WAN failover configuration. Read on 'pbr' is required to generate the mwan3 exclusion rules that keep policy-based routing working across a failover; that file holds policy names, addresses and interface names, and no credentials. Read on 'network' is deliberately NOT granted: it holds PPPoE and WireGuard secrets.",
+		"description": "Grant access to WAN and VPN failover configuration. Read on 'pbr' is required to generate the mwan3 rules that keep policy-based routing working across a failover; that file holds policy names, addresses and interface names, and no credentials. Read on 'network' is deliberately NOT granted: it holds PPPoE and WireGuard secrets. Note that 'wansentry' itself holds the notification SMTP password once one is set. Exec is granted on exactly two command lines: the mwan3 log tail and the notification test.",
 		"read": {
 			"file": {
-				"/sbin/logread -l 200 -e mwan3": [ "exec" ]
+				"/sbin/logread -l 200 -e mwan3": [ "exec" ],
+				"/usr/libexec/wansentry/notify test": [ "exec" ]
 			},
 			"ubus": {
 				"file": [ "exec" ],

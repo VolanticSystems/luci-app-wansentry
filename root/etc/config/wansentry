@@ -58,3 +58,48 @@ config wansentry 'main'
 	# 1 = flush the conntrack table on every uplink up/down transition, so
 	# existing connections are not left pinned to a dead gateway.
 	option flush_conntrack '1'
+
+# VPN failover. Independent of the WAN failover above: either, both or neither.
+# The traffic it moves is whatever an enabled pbr policy already sends into one
+# of the tunnels below; which traffic enters a tunnel stays pbr's decision.
+config vpn 'vpn'
+	option enabled '0'
+
+	# netifd interface names of the tunnels, in the order they are used: the
+	# first carries traffic while healthy, the rest are tried in turn. At
+	# least two. Example:
+	#   list tunnel 'vpnusa'
+	#   list tunnel 'vpnusa2'
+
+	# 1 = while every tunnel is down, traffic bound for them gets no route at
+	#     all (mwan3 last_resort unreachable) and can never leave by the
+	#     ordinary internet. 0 = it falls back to the ordinary internet.
+	option killswitch '1'
+
+	# Pinged THROUGH each tunnel; a tunnel is up while any one answers.
+	list track_ip '1.1.1.1'
+	list track_ip '8.8.8.8'
+
+	# Seconds between probes while healthy. After a failed probe the next
+	# ones come every 2 s, so a dead tunnel is declared in ~15-20 s.
+	option interval '5'
+	option down '3'
+	option up '3'
+
+# Email when an uplink or tunnel goes down or comes back, plus a daily report of
+# every path, so a backup that quietly died is noticed before it is needed.
+# Sent with msmtp. The password is stored here in plain text; anyone who can
+# read /etc/config/wansentry can read it, so use an account made for this.
+config notify 'notify'
+	option enabled '0'
+	# option to 'you@example.com'
+	# option from 'router@example.com'
+	# option server 'smtp.example.com'
+	option port '587'
+	# 1 = STARTTLS on 587, implicit TLS on 465.
+	option tls '1'
+	# option username ''
+	# option password ''
+	# 1 = a report of every path once a day, at daily_hour (router local time).
+	option daily '1'
+	option daily_hour '8'

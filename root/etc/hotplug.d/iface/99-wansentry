@@ -82,9 +82,16 @@ esac
 # The active uplink, as mwan3 itself reports it. Reading mwan3 rather than
 # guessing from ACTION matters: an ifdown on the BACKUP changes nothing about
 # which uplink is carrying traffic, and firing hooks for it would be wrong.
+#
+# Read the WAN policy BY NAME. This used to take the first "(100%)" line in the
+# whole ipv4 block, which was the WAN policy only because it was the only one.
+# With VPN failover there is a second policy, and when both uplinks are down the
+# WAN block reads " default" with no percentage, so the first "(100%)" belongs
+# to the TUNNEL: the hooks would fire with WANSENTRY_NEW=vpnusa. Reproduced
+# against that exact status text 2026-10-08 (old parse: vpnusa, new: none).
 active=$(mwan3 status 2>/dev/null |
          sed -n '/Current ipv4 policies/,/^$/p' |
-         sed -n 's/^ \([a-zA-Z0-9_]*\) (100%)/\1/p' | head -1)
+         sed -n '/^wansentry_fail:/,/^[^ ]/{s/^ \([a-zA-Z0-9_]*\) (100%)/\1/p}' | head -1)
 [ -n "$active" ] || active=none
 
 prev=none

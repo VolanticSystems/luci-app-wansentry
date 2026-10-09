@@ -1053,3 +1053,175 @@ written; there is no IPv6 anywhere in the development environment to carry a
 live v6 failover, and testing mwan3's own v6 behaviour is not this package's
 job. What is claimed is that the configuration is correct, not that mwan3 acts
 on it correctly.
+
+## 16. VPN failover
+
+Added in 1.2.0. Raw working: `VPN-FAILOVER-BENCH-2026-10-08.md` in the parent
+repository.
+
+### 16.1 Shape
+
+Same verdict as §2: generate mwan3, ship no daemon. A tunnel is an mwan3
+interface like an uplink. One tracked interface per tunnel, a member per tunnel
+at metric = its position, one policy `wansentry_vpn` over all of them with
+`last_resort unreachable` (the killswitch, switchable to `default`).
+
+**Traffic selection stays pbr's.** wansentry does not ask which devices go
+through the VPN; pbr already knows. Every enabled pbr policy whose interface is
+one of the failover tunnels becomes an mwan3 rule to `wansentry_vpn` instead of
+the §11.3 exclusion. pbr's policy stays enabled: mwan3's rules sit ~28000
+priorities earlier and win while mwan3 runs, and if mwan3 is ever stopped,
+pbr's `strict_enforcement` is a second killswitch underneath.
+
+**Rule order now follows pbr's own order.** §11.3 sorted the exclusions by
+address, harmless while every one said `default`. With two verdicts, order is
+meaning: both engines are first-match in config order, and sorted, the
+reference router's `src upper/25 -> tunnel` rule landed ahead of
+`src upper/25 dest DMZ -> wan` and swallowed it. The suite pins pbr order and
+the shadowing case.
+
+**The WAN half is optional.** With no uplinks chosen there are no WAN sections
+and no catch-all, so ordinary traffic is not touched by mwan3 at all.
+
+### 16.2 Two things mwan3 does not do for a tunnel
+
+**An empty table.** mwan3 builds each interface's table by copying that
+device's routes out of the main table (`mwan3_create_iface_route`). A tunnel
+with `route-nopull` has no default route, so its table is empty and it can
+never carry traffic however healthy its tracking reads. `14-wansentry-vpnroute`
+adds `default dev <tun> metric 200+position` to the main table on ifup, before
+mwan3's own hotplug. A tunnel is point-to-point, so no gateway is needed, and
+any tunnel type works unedited.
+
+**Pinned connections.** mwan3 saves the member mark into conntrack and restores
+it per packet. New connections follow the policy to the next tunnel; existing
+ones are sent into the dead one for ever (bench test 5: 101 of 110 lost, never
+recovered). mwan3's `flush_conntrack` is global, so a tunnel blip would cut the
+whole LAN. `18-wansentry-vpnflush` deletes only entries carrying the dead
+tunnel's mark, computed with mwan3's own `mwan3_get_iface_id` and
+`mwan3_id2mask` so it cannot drift from mwan3. Not on recovery: a connection on
+a backup tunnel still works there.
+
+The first version sourced `common.sh` only; `mwan3_get_iface_id` lives in
+`mwan3.sh`, the call failed, `id` was empty and the hook exited 0 having
+flushed nothing. It now logs when it cannot determine the id.
+
+**The route hook misses the first enable.** A hotplug hook only sees an ifup,
+and when VPN failover is switched on the tunnels have usually been up for days.
+None of them gets its route, mwan3 builds three empty tables, and the policy's
+lookups fall through to `unreachable`: the killswitch, for the whole tunnelled
+range. That is exactly what happened on the first production enable
+(2026-10-09): ~2.5 minutes with no route for the tunnelled range until the routes were
+added by hand. The bench never showed it because there the tunnels were always
+started after the configuration. `reconcile_vpn_routes()` in the init script now
+runs on every start and reload: for each marked tunnel that is up WITHOUT a
+default route it calls the same hook, then `mwan3 ifup` for that interface
+only, which rebuilds its table without restarting mwan3. A tunnel that already
+has its route is not touched. Verified on the sandbox: the production state
+reproduced (three empty tables, the tunnelled client dark, the control fine),
+then enabling through the settings screen repaired all three within ~8 s with
+the client back on the first tunnel; a second enable with the routes present
+logged nothing.
+
+**Switching VPN failover off erased it.** Every VPN option `depends` on the
+enable flag, and LuCI deletes a hidden option's value on save unless it is
+marked `retain`. Switching off removed the tunnel list, health-check hosts and
+timings, and switching back on offered an empty form whose save the validator
+then refused without staging anything. All dependent options are now
+`retain = true` (and `daily_hour`, which depends on `daily`). Verified on the
+sandbox: the same switch-off now stages only `vpn.enabled='0'`, where before it
+staged six deletions.
+
+### 16.3 Timings
+
+Tunnels get their own tracking: `timeout 2`, `failure_interval 2`, `down 3`,
+`up 3`, two targets, `reliability 1`. With the WAN defaults (`timeout 4`, no
+`failure_interval`) each failing check costs ~13 s, because the targets are
+probed in turn and each waits out its timeout; detection measured 38 s. Tuned,
+17 s of loss end to end, and still six consecutive lost probes before a 115 ms
+transatlantic tunnel is declared dead.
+
+### 16.4 The reconciler
+
+mwan3 carries both halves, so `reconcile()` treats `vpn.enabled` like
+`main.enabled`. Before the fix, WAN failover off with VPN failover configured
+stopped mwan3 on the next reload trigger. `tests/hardware-suite.sh` now asserts
+it, and every suite fixture that sets "the shipped default" switches both halves
+off: until then they set only `main.enabled`, inherited the router's live
+`vpn.enabled=1`, and three positive controls failed for that reason alone.
+
+### 16.5 The switchover hook read the wrong policy
+
+`99-wansentry` took the first `(100%)` line of the whole policy block as the
+active uplink. With two policies and both uplinks down, the WAN block reads
+` default` and the first `(100%)` is the tunnel's, so the hooks would fire with
+`WANSENTRY_NEW=vpnusa`. It now reads `wansentry_fail` by name. Reproduced
+against that exact status text before the fix.
+
+### 16.6 Measured, and not
+
+Measured on the bench with three real tunnels to three real servers: a dead
+server, two, all three (zero upper-range connections SNATed to a WAN address),
+recovery, a long-lived flow, the primary WAN dying under the tunnels, a killed
+OpenVPN process, a reboot. Of those, the tunnel death with a long-lived flow
+and the all-dead killswitch were repeated on configuration applied through the
+settings screen rather than written by hand; the WAN-under-tunnels, killed
+process and reboot cases were run on the hand-built prototype only.
+
+**What a settings change costs.** New connections into a tunnel need the
+policy, and the policy has no member until a tunnel's tracking says online, so
+in principle every mwan3 restart briefly applies the killswitch. Measured with a
+fresh connection every second: `reload_config` after an mwan3 change (the path
+LuCI's apply takes) cost 1 of 40; an explicit restart cost 1 of 35, whether the
+tunnels start `initial_state offline` or `online`, so `offline` stays (§12's
+reasoning applies to a tunnel kept up by `persist-tun`). One unexplained
+outlier: straight after the hardware suites, which stop and start mwan3 through
+a shimmed init script, a `reload_config` cost about 15 s of new connections
+while the tunnels re-proved themselves from scratch. Most likely a cold start
+from the state the suites left; not pinned down.
+
+**On production (GL-MT6000, 2026-10-09),** three OpenVPN tunnels to three US
+sites, killswitch on, configured through the settings screen. Outer UDP of each tunnel
+dropped in both directions, one at a time, with a client in the tunnelled range
+and a control outside it: each switchover lost about 20 s of the tunnelled
+client and none of the control; with all three dead the policy read
+`unreachable` and zero tunnelled connections were NATed to a WAN address; on
+restore the client came back through the second tunnel and then the first, ~22 s
+after the drops were removed. Not run on production: a reboot, and the WAN
+dying under the tunnels.
+
+Not measured: WireGuard as a failover tunnel; OpenVPN older than 2.7; DNS for
+tunnel traffic, which still resolves through the router's ordinary upstream
+(§7.1 applies unchanged); a restricted, non-root LuCI session driving the VPN
+fields.
+
+## 17. Email notifications
+
+`/usr/libexec/wansentry/notify` sends with msmtp, configured at run time from
+section `notify` into a 0600 file under `/var/run` that is deleted after each
+send. Three entry points:
+
+- `19-wansentry-notify` on mwan3track's `connected`/`disconnected` for any
+  interface wansentry owns, WAN or tunnel. Those are tracking verdicts, so
+  mwan3's thresholds have already filtered a flapping link. Runs in the
+  background so a slow SMTP server cannot hold up the hotplug chain the failover
+  itself runs on. Within the first 300 s of uptime the per-path boot events
+  collapse into one "router started" mail.
+- `daily`, from one root crontab line tagged `# wansentry-daily`, which
+  `reconcile_cron()` adds, rewrites or removes to match the settings and which
+  is the only line it ever touches. Stock OpenWrt ships cron disabled at boot,
+  so it is enabled when a schedule is written.
+- `test`, from the settings screen. The ACL grants exec on exactly that command
+  line, as it does for the log tail.
+
+The daily report is the answer to "test the backup occasionally": mwan3 probes
+every path continuously, so a dead backup reads offline in the next report
+whether or not anyone saw the alert, and a daily mail that stops arriving is
+itself the signal that the mail path is broken.
+
+Measured on the bench against a stand-in SMTP server: the test mail, a send to
+a dead server (logged with msmtp's reason, exit 75), an alert on a real tunnel
+failure and on its recovery with the correct active path in each, no mail with
+notifications off, none for an interface wansentry does not manage, the daily
+report, and the cron line through add, hour change and removal. Not measured: a
+real SMTP provider (TLS and AUTH paths), and the boot collapse.
