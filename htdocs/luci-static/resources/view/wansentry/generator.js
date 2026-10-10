@@ -366,7 +366,7 @@ function pbrClaims() {
 	 * first-match in file order. The reference router has
 	 *
 	 *     Local_Exception  src upper /25  dest DMZ  -> wan       (first)
-	 *     To_Tunnel          src upper /25            -> vpnusa
+	 *     To_Tunnel        src upper /25            -> vpnusa
 	 *
 	 * Sorted by address, '…/25|' sorts before '…/25|DMZ', so the tunnel rule
 	 * would come first and swallow the DMZ traffic the first policy exists to
