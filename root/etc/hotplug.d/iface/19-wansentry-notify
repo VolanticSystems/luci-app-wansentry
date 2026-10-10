@@ -11,9 +11,26 @@
 # never hold up the hotplug chain that the failover itself runs on.
 
 case "$ACTION" in connected|disconnected) ;; *) exit 0 ;; esac
+
+# mwan3 sends "disconnected" for every online path when it is merely STOPPED
+# (a restart, a reload, a Save & Apply that changes its config), and marks those
+# events MWAN3_SHUTDOWN=1 (mwan3_interface_hotplug_shutdown in mwan3.sh). Nothing
+# failed; mailing "DOWN" for each was a false alarm per path. Measured on the
+# GL-MT6000 2026-10-10: one restart, four "is DOWN" emails.
+[ "$MWAN3_SHUTDOWN" = 1 ] && exit 0
 [ -n "$INTERFACE" ] || exit 0
 [ "$(uci -q get wansentry.notify.enabled)" = 1 ] || exit 0
 [ "$(uci -q get "mwan3.$INTERFACE.wansentry")" = 1 ] || exit 0
 
-/usr/libexec/wansentry/notify event "$INTERFACE" "$ACTION" </dev/null >/dev/null 2>&1 &
+# `1000>&-` closes procd's service lock for the background sender. When mwan3's
+# own init script runs the hotplug chain it holds /var/lock/procd_mwan3.lock on
+# fd 1000, and a child that inherits the fd holds the lock for as long as it
+# lives. On the GL-MT6000 2026-10-10 three senders hung in msmtp (mwan3 had
+# flushed conntrack under their SMTP sessions), kept the lock for ten minutes,
+# every mwan3 tracker blocked on it, and the killswitch held the tunnel half
+# dark. A notification must never be able to stop the failover it reports.
+# busybox ash handles fds above 9 (checked on the EA8500 2026-10-10); dash does
+# not, but hotplug scripts run under /bin/sh, which on OpenWrt is ash.
+# shellcheck disable=SC3023
+/usr/libexec/wansentry/notify event "$INTERFACE" "$ACTION" </dev/null >/dev/null 2>&1 1000>&- &
 exit 0

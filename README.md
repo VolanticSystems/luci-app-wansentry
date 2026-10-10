@@ -53,8 +53,8 @@ to measure your own router rather than trust the numbers in it.
 One file, every device. The package is `noarch`, and the same `.apk` is
 verified installing on both aarch64 and arm_cortex-a15 hardware.
 
-    wget https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.2.1/luci-app-wansentry-1.2.1-r1.apk
-    apk add --allow-untrusted ./luci-app-wansentry-1.2.1-r1.apk
+    wget https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.2.2/luci-app-wansentry-1.2.2-r1.apk
+    apk add --allow-untrusted ./luci-app-wansentry-1.2.2-r1.apk
 
 Needs OpenWrt 25.12 or newer and `mwan3`. Both uplinks must already exist as
 working network interfaces. `--allow-untrusted` is required because this is not
@@ -65,21 +65,27 @@ Prefer to build it yourself? See *Building from source* below.
 ## Screenshots
 
 The page, taken on the author's own router: a GL-MT6000 running `pbr` with
-three policies and three OpenVPN tunnels to the US. Top to bottom: the pbr
-banner naming the policies it will protect, live status for both uplinks and
-every tunnel, then the settings in three tabs (WAN, VPN, Notifications) under
-one Save & Apply. Folded at the bottom are the complete mwan3 configuration it
-will write, updated as you edit, and the known limitations. The backup here is
-a USB-tethered phone, unplugged when this was taken, which is why its tracking
-reads disabled:
+three policies and three OpenVPN tunnels to the US. The pbr banner names the
+policies it will protect, then four tabs under one Save & Apply: Status, WAN
+config, VPN config and Notifications. The Status tab shows every uplink and
+tunnel with what it is connected to (address and gateway for an uplink, the
+server for a tunnel) and which one is carrying the traffic. Folded at the
+bottom are the complete mwan3 configuration it will write, updated as you edit,
+and the known limitations. The backup uplink here is a USB-tethered phone,
+unplugged when this was taken, which is why it shows DOWN:
 
-![WAN and VPN Failover, WAN tab](docs/overview.png)
+![WAN and VPN Failover, Status tab](docs/overview.png)
 
-The VPN tab on the same router. Three tunnels in failover order, and the
+The VPN config tab on the same router. Three tunnels in failover order, and the
 killswitch that blocks tunnel traffic rather than let it leak out the ordinary
 internet when every tunnel is down:
 
-![The VPN tab: tunnels in order, health checks, killswitch](docs/vpn-tab.png)
+![The VPN config tab: tunnels in order, health checks, killswitch](docs/vpn-tab.png)
+
+A notification email. Every alert and the daily report look like this, with a
+plain-text version for mail clients that do not show HTML:
+
+![A daily report email: every path, its state, and which one carries traffic](docs/email.png)
 
 And the hand-off. This is what you get if `/etc/config/mwan3` already contains
 anything wansentry did not write. Every field is disabled, the foreign sections
@@ -294,19 +300,26 @@ Two things this needed that are not obvious, both handled for you:
 
 ## Email notifications
 
-Off by default. Set a recipient, an SMTP server and, if it needs one, a login,
-then press *Send test email*. With it on:
+Off by default. Set a recipient and an SMTP server, then press *Send test
+email*. A login is optional, as in a mail client: tick *Server requires
+authentication* to give one. Without it most servers accept mail only for
+their own mailboxes, which suits sending to an address on the same server.
+With notifications on:
 
 - one email when any uplink or tunnel wansentry manages goes down, and one
   when it comes back, saying what is carrying the traffic now. These follow
-  mwan3's own verdicts, so its thresholds already filter a flapping link;
+  mwan3's own verdicts, so its thresholds already filter a flapping link. A
+  "back up" is sent only after a "down" was, so restarting mwan3 (a Save &
+  Apply, say) sends nothing;
 - one email at boot instead of one per path coming up;
 - a daily report of every path, at an hour you choose. A backup that died
   weeks ago and has never been needed since shows up here, every day, until
   it is fixed. A daily email that stops arriving is itself the alarm that the
   mail path is broken.
 
-Sent with `msmtp` (a dependency). The SMTP password is stored in plain text in
+Sent with `msmtp` (a dependency), with a 30 s network timeout, and never in a
+way that can hold up the failover it reports (see DESIGN.md section 17). The
+SMTP password, if you set one, is stored in plain text in
 `/etc/config/wansentry`; use an account made for this.
 
 ## What it does not solve

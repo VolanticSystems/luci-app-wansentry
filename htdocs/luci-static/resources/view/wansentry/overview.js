@@ -58,7 +58,19 @@ function activeUplink(status, policyName) {
 	return best ? best.interface : null;
 }
 
+/* mwan3 reports an interface that netifd has down (a stopped tunnel, an
+ * unplugged USB modem) as enabled with status "disabled" and up false. That
+ * read as "not tracked" here, in grey, which is the opposite of the truth:
+ * the path is dead, and a dead backup is the thing this page exists to show
+ * (measured on the bench 2026-10-10 by stopping a tunnel). */
+function ifaceDown(st) {
+	return !!(st && st.enabled && st.up === false);
+}
+
 function laneState(st) {
+	if (ifaceDown(st))
+		return 'down';
+
 	if (!st || !st.enabled)
 		return 'idle';
 
@@ -97,24 +109,119 @@ function hostTable(st) {
 	));
 }
 
-function lane(role, name, st, active) {
+/* What a lane is connected to, as one line under its name. Without it the
+ * lanes said "wan" and "wwan" and nothing a person could check against the
+ * world; the first question anyone asks on seeing them is which line is which.
+ *
+ * An uplink: its address, its gateway and the device it runs on. A tunnel:
+ * the server it connects to, by host name where the config uses one, and its
+ * address inside the tunnel. Both come from netifd through LuCI's network
+ * module, which this page already loads; the tunnel's server comes from
+ * ws.endpoints(). */
+function firstAddr(list) {
+	return (Array.isArray(list) && list.length) ? String(list[0]) : null;
+}
+
+function uplinkConn(net) {
+	if (!net)
+		return null;
+
+	var dev = net.getL3Device ? net.getL3Device() : null,
+	    addr = firstAddr(net.getIPAddrs ? net.getIPAddrs() : null),
+	    gw = net.getGatewayAddr ? net.getGatewayAddr() : null,
+	    devname = dev ? dev.getName() : (net.getIfname ? net.getIfname() : null);
+
+	/* dom.append does not flatten nested arrays, so build one flat list. */
+	var parts = addr ? [ E('span', { 'class': 'ws-mono ws-addr' }, [ addr ]) ] : [ _('No address') ];
+
+	if (addr && gw)
+		parts.push(' ' + _('via') + ' ', E('span', { 'class': 'ws-mono' }, [ gw ]));
+
+	if (devname)
+		parts.push(' · ', E('span', { 'class': 'ws-mono' }, [ devname ]));
+
+	return E('div', { 'class': 'ws-conn' }, parts);
+}
+
+function tunnelConn(net, eps) {
+	if (!net)
+		return null;
+
+	/* A dead tunnel has no L3 device any more, which is exactly when its
+	 * server matters most, so fall back to the device it is configured on. */
+	var dev = (net.getL3Device ? net.getL3Device() : null) || (net.getDevice ? net.getDevice() : null),
+	    devname = dev ? dev.getName() : null,
+	    ep = (devname && eps[devname]) || eps[net.getName()] || null,
+	    addr = firstAddr(net.getIPAddrs ? net.getIPAddrs() : null) ||
+	           firstAddr(dev && dev.getIPAddrs ? dev.getIPAddrs() : null);
+
+	/* The device form carries a dotted netmask ("10.38.0.4/255.255.255.0"),
+	 * which says nothing useful about a tunnel; the address alone does. */
+	if (addr)
+		addr = addr.split('/')[0];
+
+	/* Two lines: the server, then the tunnel's own address and device. On one
+	 * line a three-across card wrapped it in the middle of the address. */
+	var server = ep
+		? [ _('to') + ' ', E('strong', {}, [ ep.port ? '%s:%s'.format(ep.host, ep.port) : ep.host ]) ]
+		: [ _('Server unknown') ];
+
+	var inner = [];
+
+	if (addr)
+		inner.push(_('tunnel address') + ' ', E('span', { 'class': 'ws-mono ws-addr' }, [ addr ]));
+
+	if (devname)
+		inner.push(inner.length ? ' · ' : '', E('span', { 'class': 'ws-mono' }, [ devname ]));
+
+	return E('div', { 'class': 'ws-conn' }, [
+		E('div', {}, server),
+		inner.length ? E('div', { 'class': 'ws-conn2' }, inner) : ''
+	]);
+}
+
+/* Which path is carrying the traffic is the one thing a person opens this tab
+ * to learn, and it used to be 10px grey capitals. Now a solid badge, in a
+ * blue/orange pair rather than green/red: that pair stays distinct under the
+ * common forms of colour blindness, and every badge also carries a word and a
+ * symbol, so colour is never the only signal. */
+function stateBadge(state, active) {
+	if (active)
+		return E('span', { 'class': 'ws-state ws-carrying' }, [ '✔ ' + _('carrying traffic') ]);
+
+	if (state === 'down')
+		return E('span', { 'class': 'ws-state ws-down' }, [ '✖ ' + _('down') ]);
+
+	if (state === 'up')
+		return E('span', { 'class': 'ws-state ws-standby' }, [ _('standby') ]);
+
+	return E('span', { 'class': 'ws-state ws-standby' }, [ _('not tracked') ]);
+}
+
+function lane(role, name, st, active, conn) {
 	if (!name)
 		return E('div', { 'class': 'ws-lane' }, [
 			E('div', { 'class': 'ws-lanehead' }, [
 				E('span', { 'class': 'ws-lanename' }, [ _('not selected') ]),
 				E('span', { 'class': 'ws-role' }, [ role ])
 			]),
-			E('div', { 'class': 'ws-sub' }, [ _('Pick one in the WAN tab below.') ])
+			E('div', { 'class': 'ws-sub' }, [ _('Pick one in the WAN config tab.') ])
 		]);
 
 	var state = laneState(st),
-	    label = st ? (st.enabled ? (st.status || 'unknown') : _('tracking disabled')) : _('not tracked by mwan3');
+	    label = !st ? _('not tracked by mwan3')
+	          : ifaceDown(st) ? _('interface down')
+	          : st.enabled ? (st.status || 'unknown') : _('tracking disabled');
 
 	return E('div', { 'class': 'ws-lane' + (active ? ' ws-active' : '') }, [
 		E('div', { 'class': 'ws-lanehead' }, [
 			E('span', { 'class': 'ws-lanename' }, [ ws.dot(state), name ]),
-			E('span', { 'class': 'ws-role' }, [ active ? _('%s · carrying traffic').format(role) : role ])
+			E('span', { 'class': 'ws-badges' }, [
+				E('span', { 'class': 'ws-role' }, [ role ]),
+				stateBadge(state, active)
+			])
 		]),
+		conn || '',
 		E('dl', { 'class': 'ws-kv' }, [
 			E('dt', {}, [ _('Tracking') ]), E('dd', {}, [ label ]),
 			E('dt', {}, [ _('Probe state') ]), E('dd', {}, [ st ? (st.tracking || '-') : '-' ]),
@@ -158,7 +265,8 @@ return view.extend({
 			ws.events(8),
 			/* pbr is optional. resolveDefault so a router without it loads
 			 * exactly as before rather than failing the whole screen. */
-			L.resolveDefault(uci.load('pbr'), null)
+			L.resolveDefault(uci.load('pbr'), null),
+			ws.endpoints()
 		]);
 	},
 
@@ -177,25 +285,31 @@ return view.extend({
 		else
 			summary = _('Traffic is going out over %s.').format(active);
 
-		var parts = [];
+		var parts = [], net = L.bind(this.netOf, this);
 
 		if (s.primary || s.backup || !gen.vpnActive(s))
 			parts.push(
-				E('h4', { 'class': 'ws-h4' }, [ _('WAN') ]),
-				E('div', { 'class': 'ws-sub', 'style': 'margin:0 0 .8em' }, [ summary ]),
+				E('h3', {}, [ _('WAN') ]),
+				E('div', { 'class': 'ws-summary' }, [ summary ]),
 				E('div', { 'class': 'ws-lanes' }, [
-					lane(_('primary'), s.primary, statusOf(status, s.primary), active && active === s.primary),
-					lane(_('backup'), s.backup, statusOf(status, s.backup), active && active === s.backup)
+					lane(_('primary'), s.primary, statusOf(status, s.primary), active && active === s.primary,
+					     uplinkConn(net(s.primary))),
+					lane(_('backup'), s.backup, statusOf(status, s.backup), active && active === s.backup,
+					     uplinkConn(net(s.backup)))
 				]));
 
 		if (gen.vpnActive(s))
 			parts.push(this.renderVpnStatus(status, s));
 
 		parts.push(
-			E('h4', { 'class': 'ws-h4' }, [ _('Recent transitions') ]),
+			E('h3', {}, [ _('Recent transitions') ]),
 			eventList(events));
 
-		return E('div', {}, parts);
+		return E('div', { 'class': 'ws-status' }, parts);
+	},
+
+	netOf: function(name) {
+		return (this.networks || []).filter(function(n) { return n.getName() === name; })[0] || null;
 	},
 
 	/* One lane per tunnel, in failover order. "Carrying traffic" is read back
@@ -219,12 +333,15 @@ return view.extend({
 		else
 			summary = _('No VPN failover policy installed: mwan3 is not running this configuration.');
 
-		return E('div', {}, [
-			E('h4', { 'class': 'ws-h4' }, [ _('VPN') ]),
-			E('div', { 'class': 'ws-sub', 'style': 'margin:0 0 .8em' }, [ summary ]),
+		var self = this;
+
+		return E([], [
+			E('h3', {}, [ _('VPN') ]),
+			E('div', { 'class': 'ws-summary' }, [ summary ]),
 			E('div', { 'class': 'ws-lanes' }, tunnels.map(function(t, i) {
 				return lane(i === 0 ? _('first choice') : _('backup %d').format(i), t,
-				            statusOf(status, t), activeT && activeT === t);
+				            statusOf(status, t), activeT && activeT === t,
+				            tunnelConn(self.netOf(t), self.endpoints || {}));
 			}))
 		]);
 	},
@@ -232,10 +349,18 @@ return view.extend({
 	refresh: function() {
 		var self = this;
 
+		/* Addresses change (a DHCP renewal, a tunnel reconnecting), so the
+		 * netifd view is re-read with the status rather than kept from load. */
+		network.flushCache();
+
 		return Promise.all([
 			L.resolveDefault(ws.rpc.status(), null),
-			ws.events(8)
+			ws.events(8),
+			L.resolveDefault(network.getNetworks(), null)
 		]).then(function(r) {
+			if (r[2])
+				self.networks = r[2];
+
 			dom.content(self.statusNode, self.renderStatus(r[0], r[1]));
 		});
 	},
@@ -279,7 +404,7 @@ return view.extend({
 		 * "the service is stopped" is only true when both are off. */
 		if (!s.enabled && !gen.vpnActive(s))
 			out.push(ws.note('warn', _('Failover is switched off'), [
-				E('span', {}, [ _('mwan3 is stopped and disabled, so routing behaves exactly as it did before wansentry was installed. Switch failover on in the WAN or VPN tab below to arm it.') ])
+				E('span', {}, [ _('mwan3 is stopped and disabled, so routing behaves exactly as it did before wansentry was installed. Switch failover on in the WAN config or VPN config tab to arm it.') ])
 			]));
 
 		if (audit.stock.length)
@@ -371,6 +496,9 @@ return view.extend({
 		    status = data[3],
 		    events = data[4];
 
+		self.networks = networks;
+		self.endpoints = data[6] || {};
+
 		ws.injectCSS();
 
 		var audit = gen.audit(),
@@ -422,7 +550,60 @@ return view.extend({
 
 		/* ------------------------------------------------------- the form */
 
-		var m = new form.Map('wansentry', _('WAN and VPN Failover'),
+		/* form.Map REBUILDS its whole node after a plain Save (load, then
+		 * renderContents again), so anything inserted into it from outside is
+		 * wiped. 1.2.1 inserted the banners and the status that way and lost
+		 * both on the first Save. The banners are now added inside
+		 * renderContents itself, so every rebuild puts them back, between the
+		 * description and the tabs. */
+		var BannerMap = form.Map.extend({
+			renderContents: function() {
+				return this.super('renderContents', arguments).then(function(mapEl) {
+					var head = mapEl.querySelector('.cbi-map-descr') || mapEl.querySelector('h2'),
+					    banners = E('div', { 'class': 'ws-banners' }, self.renderBanners(mwan3Loaded, audit)),
+					    old = mapEl.querySelector('.ws-banners');
+
+					if (old)
+						old.parentNode.removeChild(old);
+
+					if (head)
+						head.parentNode.insertBefore(banners, head.nextSibling);
+					else
+						mapEl.insertBefore(banners, mapEl.firstChild);
+
+					/* The rebuild also replaced every widget, so the live
+					 * preview's listeners are gone with the old ones. On the
+					 * first render self.map is not set yet and render() hooks
+					 * them itself. */
+					if (self.map) {
+						self.hookPreview();
+						self.renderPreview();
+					}
+
+					return mapEl;
+				});
+			}
+		});
+
+		/* The live status as the first tab. A section with no options: it
+		 * renders the status node, which persists across rebuilds because the
+		 * poller keeps filling the same node. Nothing to parse or save. */
+		var StatusSection = form.NamedSection.extend({
+			render: function() {
+				return E('div', {
+					'class': 'cbi-section',
+					'data-tab': 'status',
+					'data-tab-title': this.title
+				}, [
+					E('div', { 'class': 'cbi-section-descr' }, [ this.description ]),
+					self.statusNode
+				]);
+			}
+		});
+
+		self.statusNode = E('div', {}, self.renderStatus(status, events));
+
+		var m = new BannerMap('wansentry', _('WAN and VPN Failover'),
 			_('Switches to a backup internet uplink when the primary fails, and to the next VPN tunnel when one dies, by generating the mwan3 configuration that does it. The uplinks and tunnels must already exist; this page only decides which one carries the traffic.'));
 
 		m.readonly = blocked;
@@ -433,7 +614,10 @@ return view.extend({
 		 * its own tab. */
 		m.tabbed = true;
 
-		var s = m.section(form.NamedSection, 'main', 'wansentry', _('WAN'),
+		m.section(StatusSection, 'main', 'status', _('Status'),
+			_('Live, refreshed every %d seconds.').format(POLL_INTERVAL));
+
+		var s = m.section(form.NamedSection, 'main', 'wansentry', _('WAN config'),
 			_('One primary uplink, one backup, and a health check that decides between them.'));
 		s.hidetitle = true;
 		var o;
@@ -549,7 +733,7 @@ return view.extend({
 
 		/* ------------------------------------------------- VPN failover */
 
-		var vs = m.section(form.NamedSection, 'vpn', 'vpn', _('VPN'),
+		var vs = m.section(form.NamedSection, 'vpn', 'vpn', _('VPN config'),
 			_('For traffic that policy-based routing (pbr) already sends into a VPN tunnel: when that tunnel dies, move the traffic to the next one, and block it if every tunnel is dead. pbr still decides which traffic uses a tunnel.'));
 		vs.hidetitle = true;
 
@@ -620,7 +804,7 @@ return view.extend({
 		o.placeholder = 'you@example.com';
 
 		o = ns.option(form.Value, 'from', _('Send as'),
-			_('The From address. Many mail servers require it to match the login.'));
+			_('The From address. When logging in, many mail servers require it to match the login.'));
 		o.placeholder = 'router@example.com';
 
 		o = ns.option(form.Value, 'server', _('SMTP server'));
@@ -636,11 +820,29 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
+		/* Optional, the way a mail client asks it. A mail server accepts mail
+		 * for its own mailboxes without a login; only relaying to other
+		 * domains needs one. A config saved before this option existed has
+		 * no `auth`, so it is read as on exactly when a login was filled in,
+		 * which is what the script did then (notify, the same fallback). */
+		o = ns.option(form.Flag, 'auth', _('Server requires authentication'),
+			_('Off: no login is sent. Most mail servers accept that only for mail to their own addresses, so it suits sending to a mailbox on the same server.'));
+		o.rmempty = false;
+		o.cfgvalue = function(section_id) {
+			var v = uci.get('wansentry', section_id, 'auth');
+
+			return (v != null) ? v : (uci.get('wansentry', section_id, 'username') ? '1' : '0');
+		};
+
 		o = ns.option(form.Value, 'username', _('SMTP login'));
+		o.depends('auth', '1');
+		o.retain = true;
 
 		o = ns.option(form.Value, 'password', _('SMTP password'),
 			_('Stored in plain text in /etc/config/wansentry. Use an account made for this.'));
 		o.password = true;
+		o.depends('auth', '1');
+		o.retain = true;
 
 		o = ns.option(form.Flag, 'daily', _('Daily report'),
 			_('One email a day listing every uplink and tunnel and whether it is up.'));
@@ -673,7 +875,6 @@ return view.extend({
 
 		return m.render().then(function(mapNode) {
 			self.map = m;
-			self.statusNode = E('div', {}, self.renderStatus(status, events));
 
 			poll.add(L.bind(self.refresh, self), POLL_INTERVAL);
 
@@ -687,28 +888,6 @@ return view.extend({
 			 * gen.settings() reads uci (stale until save), so the preview is fed
 			 * the LIVE widget values via liveSettings() instead. */
 			self.hookPreview();
-
-			/* The page title and description belong to the Map, and a stock LuCI
-			 * page starts with them. Banners and status therefore go INSIDE the
-			 * map node, after its description and before the tabs, rather than
-			 * above the whole map, where they used to push the title halfway
-			 * down the page. */
-			var head = mapNode.querySelector('.cbi-map-descr') || mapNode.querySelector('h2'),
-			    top = E([], [
-				E([], self.renderBanners(mwan3Loaded, audit)),
-				ws.section(_('Status'),
-					_('Refreshed every %d seconds.').format(POLL_INTERVAL),
-					self.statusNode),
-
-				/* Without a heading the tab strip ran straight on from the
-				 * status lanes and read as part of them. */
-				E('h3', {}, [ _('Settings') ])
-			]);
-
-			if (head)
-				head.parentNode.insertBefore(top, head.nextSibling);
-			else
-				mapNode.insertBefore(top, mapNode.firstChild);
 
 			/* Reference material, folded: it is not a setting, and left open it
 			 * made the page read as one long list. */

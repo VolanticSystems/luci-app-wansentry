@@ -22,6 +22,13 @@
 # break something healthy.
 
 case "$ACTION" in disconnected|ifdown) ;; *) exit 0 ;; esac
+
+# Not when mwan3 is only being stopped (restart, reload, a Save & Apply): the
+# tunnel is fine and comes straight back with the same mark, so cutting its
+# connections is pure damage. mwan3 marks those events MWAN3_SHUTDOWN=1.
+# Measured on the GL-MT6000 2026-10-10: one restart cut 45 live connections
+# on a healthy tunnel.
+[ "$MWAN3_SHUTDOWN" = 1 ] && exit 0
 [ -n "$INTERFACE" ] || exit 0
 [ "$(uci -q get "mwan3.$INTERFACE.wansentry_vpn")" = 1 ] || exit 0
 

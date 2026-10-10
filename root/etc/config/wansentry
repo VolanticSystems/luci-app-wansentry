@@ -98,6 +98,9 @@ config notify 'notify'
 	option port '587'
 	# 1 = STARTTLS on 587, implicit TLS on 465.
 	option tls '1'
+	# 1 = log in with username/password. 0 = no login, which most servers
+	# accept only for mail to their own mailboxes.
+	option auth '0'
 	# option username ''
 	# option password ''
 	# 1 = a report of every path once a day, at daily_hour (router local time).

@@ -1265,3 +1265,78 @@ follows edits on any tab.
 to tick "Enable failover", a label renamed in 1.2.0. And the limitations card
 still said IPv6 was out of scope, which stopped being true in 1.1.2; it now
 says IPv6 is generated but has not been failover-tested.
+
+## 19. 1.2.2: status as a tab, and three email defects found on production
+
+**Status became the first tab** (Status, WAN config, VPN config,
+Notifications). Each lane now says what it is
+connected to: an uplink's address, gateway and device; a tunnel's server and
+its address inside the tunnel. The server comes from
+`/usr/libexec/wansentry/endpoints`, which prints only the `remote` host and
+port of each OpenVPN instance and the endpoint of each WireGuard interface.
+The page does not read those files itself because they hold the private keys;
+the ACL grants exec on that one command line instead. The state badges are a
+blue/orange pair (carrying traffic, down) with a word and a symbol on each,
+because the old grey capitals were unreadable and green/red fails the common
+forms of colour blindness.
+
+**1.2.1 lost the status and banners on a plain Save.** form.Map rebuilds its
+node after Save, and 1.2.1 had inserted them into that node from outside.
+Reproduced on the bench (five lanes before Save, none after). The banners are
+now added inside the Map's own renderContents, and the status is a section, so
+every rebuild restores both. The live preview's listeners are re-attached on
+each rebuild for the same reason.
+
+**A path whose interface is down read as "not tracked".** mwan3 reports it as
+enabled, status "disabled", up false. It now reads DOWN, which for an
+unplugged backup is the truth the page exists to show.
+
+**Optional authentication.** A checkbox, as in a mail client. A config from
+before it existed logs in exactly when a username is set, which is what the
+script did then; five combinations were checked against a stand-in msmtp that
+records its configuration.
+
+### The email that froze the failover
+
+Found on my own router on 2026-10-10, set off by a `reload_config` I ran
+there, which restarted mwan3. What followed:
+
+1. mwan3's stop sends `disconnected` for every online path, marked
+   `MWAN3_SHUTDOWN=1`. The notify hook mailed "is DOWN" for each: four false
+   alarms. The tunnel flush hook cut 45 live connections on a healthy tunnel.
+2. mwan3 also flushed conntrack, under the SMTP sessions of those emails. The
+   server had already accepted the mail; msmtp, with no timeout, waited for
+   ever for a reply that would never come.
+3. Those events ran inside `/etc/init.d/mwan3`, which holds procd's service
+   lock on fd 1000. The backgrounded senders inherited the fd, so the lock
+   stayed held while they lived. Every mwan3 tracker blocked on it, every path
+   sat at "connecting", and the VPN policy fell to `unreachable`: the killswitch
+   held the tunnel half dark for about ten minutes, until the hung msmtp
+   processes were killed.
+
+Three fixes, each tested on the bench with a stand-in msmtp that hangs:
+
+- the hooks ignore `MWAN3_SHUTDOWN=1` events (nothing failed);
+- the sender is started with fd 1000 closed, so no notification can hold the
+  lock whatever path spawns it;
+- msmtp gets `timeout 30`.
+
+Measured: with the old hooks, an mwan3 restart left 0 of 5 paths online after
+50 s, five hung senders and six processes waiting on the lock. With the new
+hooks: 5 of 5 online, no lock waiters. With only the fd fix (shutdown skip
+removed): still 5 of 5, though the senders hung, which is the case it exists
+for. A real tunnel failure with a hanging sender: the failover still happened
+and recovered. A send to an address that never answers gave up at 30 s and
+logged why.
+
+**And a fourth: "back up" after a restart.** A restart starts every path
+offline (`initial_state`) and announces each "connected", which mailed "back
+up" for paths that never went down. "Back up" is now sent only when a "down"
+was sent for that path (a marker in /var/run). Measured: an mwan3 restart sends
+nothing; a real tunnel failure sends "DOWN" after about 6 s and "back up" when
+it recovers.
+
+**The emails are HTML** (multipart, with the plain text kept), laid out like
+the page: a dark header with the router's name, the event as a headline, every
+path in a table with the same badges. Inline styles only, because mail clients
+strip style blocks.

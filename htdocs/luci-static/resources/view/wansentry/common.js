@@ -36,49 +36,63 @@ var callMwan3Status = rpc.declare({
 var STYLE_ID = 'wansentry-style';
 
 var CSS = '\
-.ws-fold{margin:0 0 .8em}\
-.ws-fold>summary{cursor:pointer;font-weight:700;padding:.3em 0}\
+.ws-fold{margin:0 0 .8em;font-size:14px}\
+.ws-fold>summary{cursor:pointer;font-weight:700;font-size:15px;padding:.3em 0}\
 .ws-fold>summary .ws-sub{display:inline;font-weight:400;margin-left:.6em}\
 .ws-fold[open]>summary{margin-bottom:.5em}\
-.ws-h4{margin:1.4em 0 .3em;font-size:13px;font-weight:700}\
-.ws-h4:first-child{margin-top:0}\
-.ws-sub{color:var(--text-color-medium);font-size:11px;line-height:15px;display:block}\
-.ws-mono{font-family:var(--font-mono);font-size:11px}\
+.ws-status{font-size:14px}\
+.ws-section>h3{font-size:22px}\
+.ws-status h3{margin:1.4em 0 .3em;font-size:22px}\
+.ws-status h3:first-child{margin-top:.2em}\
+.ws-summary{margin:0 0 .8em;font-size:15px}\
+.ws-conn{margin:.4em 0 0;font-size:15px}\
+.ws-conn .ws-mono{font-size:14px}\
+.ws-conn .ws-addr{font-weight:700}\
+.ws-conn2{font-size:14px;margin-top:.1em}\
+.ws-sub{color:var(--text-color-medium);font-size:13px;line-height:18px;display:block}\
+.ws-mono{font-family:var(--font-mono);font-size:13px}\
 .ws-note{border-left:3px solid var(--border-color-medium);padding:.15em 0 .15em .8em;\
- margin:0 0 1em;font-size:12px;line-height:1.5}\
-.ws-note h4{margin:0 0 .25em;font-size:12px;font-weight:700}\
+ margin:0 0 1em;font-size:14px;line-height:1.5}\
+.ws-note h4{margin:0 0 .25em;font-size:14px;font-weight:700}\
 .ws-note.ws-warn{border-left-color:hsl(27,70%,46%)}\
 .ws-note.ws-error{border-left-color:hsl(2,62%,50%)}\
 .ws-note.ws-info{border-left-color:hsl(210,58%,46%)}\
-.ws-lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1em}\
-.ws-lane{border:1px solid var(--border-color-medium);border-radius:4px;padding:.7em .9em}\
-.ws-lane.ws-active{border-color:hsl(150,50%,36%);box-shadow:inset 3px 0 0 hsl(150,50%,36%)}\
-.ws-lanehead{display:flex;align-items:baseline;justify-content:space-between;gap:.6em}\
-.ws-lanename{font-weight:700;font-size:13px}\
-.ws-role{font-size:10px;text-transform:uppercase;letter-spacing:.06em;\
- color:var(--text-color-medium)}\
-.ws-dot{display:inline-block;width:8px;height:8px;border-radius:50%;\
+.ws-lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1em}\
+.ws-lane{border:1px solid var(--border-color-medium);border-radius:4px;padding:.8em 1em}\
+.ws-lane.ws-active{border:2px solid #0072b2;box-shadow:inset 5px 0 0 #0072b2}\
+.ws-lanehead{display:flex;align-items:center;justify-content:space-between;gap:.6em;flex-wrap:wrap}\
+.ws-lanename{font-weight:700;font-size:18px}\
+.ws-badges{display:flex;gap:.4em;flex-wrap:wrap}\
+.ws-role,.ws-state{font-size:12px;font-weight:700;text-transform:uppercase;\
+ letter-spacing:.05em;padding:.2em .6em;border-radius:3px;white-space:nowrap;\
+ border:2px solid currentColor}\
+.ws-state.ws-carrying{background:#0072b2;border-color:#0072b2;color:#fff}\
+.ws-state.ws-down{background:#b34d00;border-color:#b34d00;color:#fff}\
+[data-tab="status"]>.cbi-section-descr{font-size:14px}\
+.ws-state.ws-standby{border-style:dashed}\
+.ws-dot{display:inline-block;width:11px;height:11px;border-radius:50%;\
  margin-right:.45em;vertical-align:baseline;background:hsl(0,0%,55%)}\
-.ws-dot.ws-up{background:hsl(150,50%,40%)}\
-.ws-dot.ws-down{background:hsl(2,62%,52%)}\
+.ws-dot.ws-up{background:#009e73}\
+.ws-dot.ws-down{background:#d55e00}\
 .ws-dot.ws-idle{background:hsl(0,0%,55%)}\
-.ws-kv{display:grid;grid-template-columns:auto 1fr;gap:.15em .8em;margin:.6em 0 0;\
- font-size:11.5px}\
-.ws-kv dt{color:var(--text-color-medium);white-space:nowrap}\
+.ws-kv{display:grid;grid-template-columns:auto 1fr;gap:.2em 1em;margin:.7em 0 0;\
+ font-size:14px}\
+.ws-kv dt{font-weight:700;white-space:nowrap}\
 .ws-kv dd{margin:0;font-variant-numeric:tabular-nums}\
-.ws-hosts{margin:.6em 0 0;width:100%;font-size:11px;border-collapse:collapse}\
-.ws-hosts td,.ws-hosts th{padding:.18em .5em .18em 0;text-align:left;\
+.ws-hosts{margin:.7em 0 0;width:100%;font-size:14px;border-collapse:collapse}\
+.ws-hosts td,.ws-hosts th{padding:.2em .5em .2em 0;text-align:left;\
  border-bottom:1px solid var(--border-color-low)}\
-.ws-hosts th{color:var(--text-color-medium);font-weight:400}\
+.ws-hosts th{font-weight:700}\
+.ws-hosts .ws-mono{font-size:14px}\
 .ws-hosts .ws-num{text-align:right;font-variant-numeric:tabular-nums}\
-.ws-events{margin:0;padding:0;list-style:none;font-size:11.5px;line-height:1.55}\
+.ws-events{margin:0;padding:0;list-style:none;font-size:14px;line-height:1.6}\
 .ws-events li{display:flex;gap:.8em;padding:.15em 0;border-bottom:1px solid var(--border-color-low)}\
 .ws-events li:last-child{border-bottom:none}\
 .ws-events time{color:var(--text-color-medium);white-space:nowrap;\
  font-variant-numeric:tabular-nums}\
 .ws-pre{margin:0;padding:.7em .9em;overflow-x:auto;border-radius:3px;\
  background:var(--background-color-low);border:1px solid var(--border-color-low);\
- font-family:var(--font-mono);font-size:11px;line-height:1.5;white-space:pre}\
+ font-family:var(--font-mono);font-size:13px;line-height:1.5;white-space:pre}\
 ';
 
 function injectCSS() {
@@ -113,7 +127,7 @@ function duration(sec) {
 /* A stock LuCI section: the theme's own h3 and description styles, so these
  * headings match the ones form.Map draws instead of a look of our own. */
 function section(title, descr, content) {
-	return E('div', { 'class': 'cbi-section' }, [
+	return E('div', { 'class': 'cbi-section ws-section' }, [
 		E('h3', {}, [ title ]),
 		descr ? E('div', { 'class': 'cbi-section-descr' }, [ descr ]) : '',
 		content
@@ -191,6 +205,29 @@ function events(limit) {
 	});
 }
 
+/* The far end of each tunnel, keyed by device (tun0, wg_x): what the status
+ * lanes show as "connected to". Read through a helper that prints host and
+ * port only, because the files it comes from also hold private keys (see
+ * /usr/libexec/wansentry/endpoints). Any failure gives an empty map, and the
+ * lanes then simply show no server. */
+function endpoints() {
+	return L.resolveDefault(fs.exec('/usr/libexec/wansentry/endpoints'), null).then(function(res) {
+		var map = {};
+
+		if (!res || res.code !== 0 || !res.stdout)
+			return map;
+
+		res.stdout.split('\n').forEach(function(line) {
+			var f = line.split('\t');
+
+			if (f.length >= 3 && f[0] && f[2])
+				map[f[0]] = { instance: f[1], host: f[2], port: f[3] || '' };
+		});
+
+		return map;
+	});
+}
+
 return baseclass.extend({
 	rpc: {
 		status: callMwan3Status
@@ -202,5 +239,6 @@ return baseclass.extend({
 	fold: fold,
 	note: note,
 	dot: dot,
-	events: events
+	events: events,
+	endpoints: endpoints
 });

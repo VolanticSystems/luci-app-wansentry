@@ -1,0 +1,78 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 VolanticSystems
+#
+# Print the far end of every enabled tunnel, one line each:
+#   <device> TAB <instance> TAB <host> TAB <port>
+#
+# Why a helper rather than letting the page read the configs itself: an
+# OpenVPN config file usually carries the client's private key inline, and
+# the WireGuard peers live in /etc/config/network beside their keys. Granting
+# the page read on either would hand those keys to anyone holding the
+# wansentry ACL, to show a host name. This prints the `remote` line and the
+# endpoint, nothing else, and the ACL grants exec on this exact command line.
+
+. /lib/functions.sh
+
+emit() {
+	[ -n "$1" ] && [ -n "$3" ] && printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"
+}
+
+ovpn() {
+	local s="$1" enabled cfg dev remote port
+
+	config_get_bool enabled "$s" enabled 0
+	[ "$enabled" = 1 ] || return 0
+
+	config_get cfg "$s" config
+
+	if [ -n "$cfg" ]; then
+		[ -r "$cfg" ] || return 0
+		dev=$(sed -n 's/^[[:space:]]*dev[[:space:]][[:space:]]*\([^[:space:]#;]*\).*/\1/p' "$cfg" | head -n 1)
+		# shellcheck disable=SC2046
+		set -- $(sed -n 's/^[[:space:]]*remote[[:space:]][[:space:]]*//p' "$cfg" | head -n 1)
+		remote="$1"; port="$2"
+	else
+		config_get dev "$s" dev
+		config_get remote "$s" remote
+		config_get port "$s" port
+		# shellcheck disable=SC2086
+		set -- $remote
+		remote="$1"; [ -n "$2" ] && port="$2"
+	fi
+
+	# A bare "dev tun" is numbered by the kernel at start; there is no way to
+	# tell from the config which tunN it got, so it is left out rather than
+	# guessed.
+	case "$dev" in tun|tap) return 0 ;; esac
+
+	emit "$dev" "$s" "$remote" "${port:-1194}"
+}
+
+WG_IFACE=
+wgpeer() {
+	local host port
+
+	config_get host "$1" endpoint_host
+	config_get port "$1" endpoint_port
+	[ -n "$host" ] || return 0
+	emit "$WG_IFACE" "$WG_IFACE" "$host" "$port"
+	WG_IFACE=
+}
+
+wgif() {
+	local proto
+
+	config_get proto "$1" proto
+	[ "$proto" = wireguard ] || return 0
+	WG_IFACE="$1"
+	config_foreach wgpeer "wireguard_$1"
+}
+
+config_load openvpn
+config_foreach ovpn openvpn
+
+config_load network
+config_foreach wgif interface
+
+exit 0

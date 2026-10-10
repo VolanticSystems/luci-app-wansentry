@@ -31,6 +31,10 @@ config_get port     notify port 587
 config_get_bool tls notify tls 1
 config_get user     notify username
 config_get pass     notify password
+# auth: log in or not. Unset (a config from before the option existed) means
+# what it always meant: log in exactly when a username is filled in.
+config_get auth     notify auth
+[ -n "$auth" ] || { [ -n "$user" ] && auth=1 || auth=0; }
 
 host=$(uci -q get system.@system[0].hostname)
 [ -n "$host" ] || host=OpenWrt
@@ -69,13 +73,83 @@ summary() {
 	esac
 	echo
 	echo "All paths:"
-	paths | while read -r i kind st; do printf '  %-12s %-7s %s\n' "$i" "$kind" "$st"; done
+	paths | sort -k2,2r -k1,1 | while read -r i kind st; do printf '  %-12s %-7s %s\n' "$i" "$kind" "$st"; done
+}
+
+# ------------------------------------------------------------------- html
+
+# The same message as the plain text, laid out like the LuCI page it comes
+# from: a dark header with the router's name, the event as a headline, then
+# every path in a table with the badges the Status tab uses. Inline styles
+# only, because mail clients strip <style> blocks. Colours are the page's
+# blue/orange pair, which stays distinct under the common forms of colour
+# blindness, and every badge also carries a word.
+
+esc() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+badge() {
+	# $1 text, $2 background, $3 text colour, $4 border
+	printf '<span style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:12px;font-weight:bold;letter-spacing:.04em;text-transform:uppercase;background:%s;color:%s;border:2px solid %s">%s</span>' \
+		"$2" "$3" "$4" "$1"
+}
+
+state_badge() {
+	case "$1" in
+		online)  badge "&#10004; online" "#00785a" "#ffffff" "#00785a" ;;
+		offline) badge "&#10006; offline" "#b34d00" "#ffffff" "#b34d00" ;;
+		*)       badge "$1" "#ffffff" "#404040" "#808080" ;;
+	esac
+}
+
+html() {
+	# $1 headline, $2 tone (down|up|info)
+	local lead tone colour w v i kind st extra
+	lead=$(printf '%s' "$1" | esc); tone="$2"
+	case "$tone" in
+		down) colour="#b34d00" ;;
+		up)   colour="#0072b2" ;;
+		*)    colour="#404040" ;;
+	esac
+	w=$(active wansentry_fail); v=$(active wansentry_vpn)
+
+	printf '<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f4f4f4">'
+	printf '<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="background:#f4f4f4"><tr><td align="center" style="padding:16px">'
+	printf '<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%%;background:#ffffff;border:1px solid #d0d0d0;border-radius:4px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#404040">'
+	printf '<tr><td style="background:#2d2d2d;color:#ffffff;padding:12px 20px;font-size:18px;font-weight:bold;border-radius:4px 4px 0 0">%s <span style="font-weight:normal;color:#bbbbbb;font-size:14px">&middot; WAN and VPN Failover</span></td></tr>' \
+		"$(printf '%s' "$host" | esc)"
+	printf '<tr><td style="padding:20px 20px 4px;font-size:22px;font-weight:bold;color:%s;border-left:6px solid %s">%s</td></tr>' "$colour" "$colour" "$lead"
+	printf '<tr><td style="padding:4px 20px 12px;font-size:13px;color:#808080">%s</td></tr>' "$(date '+%Y-%m-%d %H:%M:%S')"
+
+	printf '<tr><td style="padding:4px 20px 12px;font-size:15px">'
+	[ -n "$w" ] && printf '<div style="margin:4px 0">Internet traffic is using <b>%s</b></div>' "$w"
+	case "$v" in
+		'') ;;
+		unreachable) printf '<div style="margin:4px 0">%s Every tunnel is down; tunnel traffic is blocked (killswitch holding)</div>' "$(badge "&#10006; blocked" "#b34d00" "#ffffff" "#b34d00")" ;;
+		default)     printf '<div style="margin:4px 0">%s Every tunnel is down; tunnel traffic is using the ordinary internet</div>' "$(badge "&#10006; no tunnel" "#b34d00" "#ffffff" "#b34d00")" ;;
+		*)           printf '<div style="margin:4px 0">Tunnel traffic is using <b>%s</b></div>' "$v" ;;
+	esac
+	printf '</td></tr>'
+
+	printf '<tr><td style="padding:4px 20px 20px"><table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:14px">'
+	printf '<tr><th align="left" style="padding:6px 8px 6px 0;border-bottom:2px solid #d0d0d0">Path</th><th align="left" style="padding:6px 8px;border-bottom:2px solid #d0d0d0">Type</th><th align="left" style="padding:6px 0 6px 8px;border-bottom:2px solid #d0d0d0">State</th></tr>'
+	paths | sort -k2,2r -k1,1 | while read -r i kind st; do
+		extra=
+		{ [ "$i" = "$w" ] || [ "$i" = "$v" ]; } && extra=" $(badge "&#10004; carrying traffic" "#0072b2" "#ffffff" "#0072b2")"
+		printf '<tr><td style="padding:7px 8px 7px 0;border-bottom:1px solid #e6e6e6;font-weight:bold">%s</td><td style="padding:7px 8px;border-bottom:1px solid #e6e6e6">%s</td><td style="padding:7px 0 7px 8px;border-bottom:1px solid #e6e6e6">%s%s</td></tr>' \
+			"$i" "$kind" "$(state_badge "$st")" "$extra"
+	done
+	printf '</table></td></tr>'
+
+	printf '<tr><td style="padding:10px 20px;font-size:12px;color:#808080;border-top:1px solid #e6e6e6">Sent by wansentry on %s. Settings: Network &rsaquo; WAN and VPN Failover &rsaquo; Notifications.</td></tr>' \
+		"$(printf '%s' "$host" | esc)"
+	printf '</table></td></tr></table></body></html>\n'
 }
 
 # ------------------------------------------------------------------- send
 
 send() {
-	local subject="$1" body="$2" rc conf
+	# $1 subject, $2 headline, $3 tone (down|up|info)
+	local subject="$1" lead="$2" tone="$3" rc conf err boundary
 	if [ -z "$to" ] || [ -z "$server" ]; then
 		log warn "not sent, no recipient or SMTP server configured: $subject"
 		return 1
@@ -83,12 +157,21 @@ send() {
 	command -v msmtp >/dev/null 2>&1 || { log warn "not sent, msmtp is not installed: $subject"; return 1; }
 
 	conf=$(mktemp /var/run/wansentry-msmtp.XXXXXX) || return 1
+	# One error file PER SEND. It used to be a fixed path, and a mwan3 restart
+	# fires several events at once: four messages reached the mail server on
+	# 2026-10-10 and the router logged one, the others' bookkeeping trampled.
+	err=$(mktemp /var/run/wansentry-msmtp-err.XXXXXX) || { rm -f "$conf"; return 1; }
 	chmod 600 "$conf"
 	{
 		echo "account default"
 		echo "host $server"
 		echo "port $port"
 		echo "from ${from:-$to}"
+		# Without a timeout msmtp waits for ever on a session whose reply
+		# never comes, which is what a failover does to it: the uplink dies,
+		# or mwan3 flushes conntrack, mid-conversation. Measured 2026-10-10:
+		# three senders still waiting after ten minutes.
+		echo "timeout 30"
 		if [ "$tls" = 1 ]; then
 			echo "tls on"
 			echo "tls_starttls $([ "$port" = 465 ] && echo off || echo on)"
@@ -96,7 +179,7 @@ send() {
 		else
 			echo "tls off"
 		fi
-		if [ -n "$user" ]; then
+		if [ "$auth" = 1 ] && [ -n "$user" ]; then
 			echo "auth on"
 			echo "user $user"
 			echo "password $pass"
@@ -105,17 +188,25 @@ send() {
 		fi
 	} > "$conf"
 
-	printf 'To: %s\nFrom: %s\nSubject: [%s] %s\nContent-Type: text/plain; charset=UTF-8\n\n%s\n' \
-		"$to" "${from:-$to}" "$host" "$subject" "$body" |
-		msmtp -C "$conf" -t >/var/run/wansentry-msmtp.err 2>&1
+	# multipart/alternative: the plain text first for clients that show
+	# only that, the HTML second for the ones that render it.
+	boundary="wansentry-$(head -c 8 /dev/urandom | hexdump -v -e '1/1 "%02x"')"
+	{
+		printf 'To: %s\nFrom: %s\nSubject: [%s] %s\n' "$to" "${from:-$to}" "$host" "$subject"
+		printf 'MIME-Version: 1.0\nContent-Type: multipart/alternative; boundary="%s"\n\n' "$boundary"
+		printf -- '--%s\nContent-Type: text/plain; charset=UTF-8\n\n%s\n\n%s\n\n' "$boundary" "$lead" "$(summary)"
+		printf -- '--%s\nContent-Type: text/html; charset=UTF-8\n\n' "$boundary"
+		html "$lead" "$tone"
+		printf -- '\n--%s--\n' "$boundary"
+	} | msmtp -C "$conf" -t >"$err" 2>&1
 	rc=$?
 	rm -f "$conf"
 	if [ "$rc" -eq 0 ]; then
 		log notice "sent: $subject"
 	else
-		log err "FAILED (msmtp exit $rc): $subject: $(head -c 200 /var/run/wansentry-msmtp.err)"
+		log err "FAILED (msmtp exit $rc): $subject: $(head -c 200 "$err")"
 	fi
-	rm -f /var/run/wansentry-msmtp.err
+	rm -f "$err"
 	return "$rc"
 }
 
@@ -125,9 +216,7 @@ case "$1" in
 	test)
 		# Sent even with notifications switched off: the point of the button
 		# is to prove the mail path before relying on it.
-		send "test message" "This is a test from wansentry on $host.
-
-$(summary)"
+		send "test message" "Test message: email from this router works" info
 		exit $?
 		;;
 esac
@@ -138,8 +227,8 @@ case "$1" in
 	event)
 		iface="$2"; action="$3"
 		case "$action" in
-			disconnected) what="is DOWN" ;;
-			connected)    what="is back up" ;;
+			disconnected) what="is DOWN"; tone=down ;;
+			connected)    what="is back up"; tone=up ;;
 			*) exit 0 ;;
 		esac
 		kind=uplink
@@ -152,23 +241,33 @@ case "$1" in
 			[ -e /var/run/wansentry-bootmail ] && exit 0
 			touch /var/run/wansentry-bootmail
 			sleep 120
-			send "router started" "$host started $(( up / 60 )) minute(s) ago. Status two minutes later:
-
-$(summary)"
+			send "router started" "Router started $(( up / 60 )) minute(s) ago" info
 			exit $?
 		fi
 
-		send "$kind $iface $what" "$(date '+%Y-%m-%d %H:%M:%S'): $kind $iface $what.
+		# "Back up" only answers a "DOWN" that was actually sent. A restart of
+		# mwan3 starts every path offline (initial_state) and then announces
+		# each one "connected", which mailed "back up" for paths that never
+		# went down (sandbox, 2026-10-10: three after one restart). The marker
+		# lives in /var/run, so a reboot forgets it and the boot report covers
+		# that case instead.
+		mark="/var/run/wansentry-down.$iface"
+		if [ "$action" = connected ]; then
+			[ -e "$mark" ] || exit 0
+			rm -f "$mark"
+		else
+			touch "$mark"
+		fi
 
-$(summary)"
+		send "$kind $iface $what" "The $kind $iface $what" "$tone"
 		;;
 	daily)
 		down=$(paths | awk '$3 != "online" {print $1}' | tr '\n' ' ')
 		if [ -n "$down" ]; then
 			subj="daily report: NOT all paths up ($down)"
+			send "${subj% }" "Daily report: not every path is up (${down% })" down
 		else
-			subj="daily report: all paths up"
+			send "daily report: all paths up" "Daily report: every path is up" up
 		fi
-		send "${subj% }" "$(summary)"
 		;;
 esac
