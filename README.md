@@ -53,7 +53,7 @@ to measure your own router rather than trust the numbers in it.
 One file, every device. The package is `noarch`, and the same `.apk` is
 verified installing on both aarch64 and arm_cortex-a15 hardware.
 
-    wget https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.2.2/luci-app-wansentry-1.2.2-r1.apk
+    wget -O luci-app-wansentry-1.2.2-r1.apk https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.2.2/luci-app-wansentry-1.2.2-r1.apk
     apk add --allow-untrusted ./luci-app-wansentry-1.2.2-r1.apk
 
 Needs OpenWrt 25.12 or newer and `mwan3`. Both uplinks must already exist as
