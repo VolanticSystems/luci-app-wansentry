@@ -1225,3 +1225,43 @@ failure and on its recovery with the correct active path in each, no mail with
 notifications off, none for an interface wansentry does not manage, the daily
 report, and the cron line through add, hour change and removal. Not measured: a
 real SMTP provider (TLS and AUTH paths), and the boot collapse.
+
+## 18. One page, three tabs
+
+Added in 1.2.1, after looking at 1.2.0 with fresh eyes: it read like a
+laundry list. The cause was mechanical: VPN failover and
+email were added to the 1.1 page as further sections at the bottom, and the
+page was never looked at as a whole again.
+
+**What was wrong, against the stock LuCI pages beside it.** Every stock page
+opens with its large title and description. This one opened with a custom
+status card, so the real title arrived halfway down and read as a subheading.
+The WAN settings had no heading of their own while VPN and email did, so there
+was no visible line where WAN ended. Reference material (the generated config
+and the limitations) sat open at full length below the form.
+
+**What it is now.** The title and description first, then any banner, then the
+live status (WAN lanes and tunnel lanes side by side, since status is the
+overview of both), then the settings as three tabs: WAN, VPN, Notifications.
+The tabs are `form.Map.tabbed`, LuCI's own mechanism, so they look and behave
+like every other tabbed page. The generated configuration and the limitations
+are folded at the bottom. Field help was cut to one line each; the detail
+lives here and in the README.
+
+**Tabs on one page, not separate pages.** LuCI can also make each tab its own
+page, as Firewall does. That was rejected: the generated mwan3 config depends
+on all three sections at once, and separate pages would each get their own
+Save & Apply that the others' preview could not see.
+
+**What was checked, because tabs hide things.** A value that fails validation
+on a hidden tab must still stop the save: on the bench an invalid WAN interval
+saved from the VPN tab was refused, with the message naming the field and the
+WAN tab flagged. Switching VPN failover off still stages only `vpn.enabled`
+(the `retain` fix from 1.2.0 survives the move into a tab). The read-only
+hand-off still disables every control on every tab. The live preview still
+follows edits on any tab.
+
+**Two stale texts found on the way.** The "failover is off" banner told people
+to tick "Enable failover", a label renamed in 1.2.0. And the limitations card
+still said IPv6 was out of scope, which stopped being true in 1.1.2; it now
+says IPv6 is generated but has not been failover-tested.

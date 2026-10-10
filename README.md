@@ -45,15 +45,16 @@ to measure your own router rather than trust the numbers in it.
 > are verified too, as is coexistence with policy-based routing and a VPN:
 > measured on a bench built to replicate a real production stack rather than a
 > clean two-WAN rig, because a clean rig cannot reproduce any of it. See *Known limitations* for what remains, chiefly that this
-> is IPv4 only and does not solve DNS.
+> does not solve DNS, and that IPv6 is generated but has never been
+> failover-tested on a live IPv6 line.
 
 ## Install
 
 One file, every device. The package is `noarch`, and the same `.apk` is
 verified installing on both aarch64 and arm_cortex-a15 hardware.
 
-    wget https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.1.1/luci-app-wansentry-1.1.1-r1.apk
-    apk add --allow-untrusted ./luci-app-wansentry-1.1.1-r1.apk
+    wget https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.2.1/luci-app-wansentry-1.2.1-r1.apk
+    apk add --allow-untrusted ./luci-app-wansentry-1.2.1-r1.apk
 
 Needs OpenWrt 25.12 or newer and `mwan3`. Both uplinks must already exist as
 working network interfaces. `--allow-untrusted` is required because this is not
@@ -63,13 +64,22 @@ Prefer to build it yourself? See *Building from source* below.
 
 ## Screenshots
 
-The settings screen, taken on a bench router with `pbr` installed and three
-policies present. Top to bottom: the pbr banner naming the policies it found
-and will generate exclusion rules for, live failover status for both uplinks,
-the ten fields, and then the complete mwan3 configuration it will write,
-rendered before anything is applied:
+The page, taken on the author's own router: a GL-MT6000 running `pbr` with
+three policies and three OpenVPN tunnels to the US. Top to bottom: the pbr
+banner naming the policies it will protect, live status for both uplinks and
+every tunnel, then the settings in three tabs (WAN, VPN, Notifications) under
+one Save & Apply. Folded at the bottom are the complete mwan3 configuration it
+will write, updated as you edit, and the known limitations. The backup here is
+a USB-tethered phone, unplugged when this was taken, which is why its tracking
+reads disabled:
 
-![WAN failover settings and the generated mwan3 configuration](docs/overview.png)
+![WAN and VPN Failover, WAN tab](docs/overview.png)
+
+The VPN tab on the same router. Three tunnels in failover order, and the
+killswitch that blocks tunnel traffic rather than let it leak out the ordinary
+internet when every tunnel is down:
+
+![The VPN tab: tunnels in order, health checks, killswitch](docs/vpn-tab.png)
 
 And the hand-off. This is what you get if `/etc/config/mwan3` already contains
 anything wansentry did not write. Every field is disabled, the foreign sections
@@ -110,9 +120,9 @@ package rests on.
 
 | | `luci-app-mwan3` | `luci-app-wansentry` |
 |---|---|---|
-| Scope | Every mwan3 feature: load balancing, weights, arbitrary policies and rules | Failover only: one primary, one backup |
+| Scope | Every mwan3 feature: load balancing, weights, arbitrary policies and rules | Failover only: one primary and one backup uplink, plus an ordered list of VPN tunnels |
 | Screens for a working setup | Several: Interfaces, Members, Policies, Rules, plus status | 1 |
-| Fields | Every mwan3 option, on every section | 9 |
+| Fields | Every mwan3 option, on every section | 10 for WAN failover; VPN failover and email each on a tab of their own |
 | Configuration model | You write mwan3 config | wansentry generates it, and shows you exactly what it wrote |
 | Backend | mwan3 | mwan3 (same engine, same package) |
 | Coexistence | It *is* the mwan3 editor | Refuses to touch mwan3 config it did not create |
@@ -177,14 +187,16 @@ applying an unchanged configuration produces zero uci operations.
 - **If both uplinks are marked offline, traffic falls through to the kernel
   routing table** rather than being blackholed. A tracking false positive
   should degrade to plain routing, not to a total outage.
-- **IPv4 only in v1.** IPv6 failover does not move on a default-route metric,
-  and pretending otherwise does not solve it.
+- **IPv6 follows IPv4, or is left alone.** An uplink's IPv6 partner (`wan6`
+  beside `wan`) is generated alongside it, so a failover never moves IPv4 and
+  leaves IPv6 routing out the dead uplink. Nothing is asked: the partner is
+  derived from the interface name, the way OpenWrt itself pairs them.
 
 Each of these is argued, with sources, in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## If your router already runs pbr or a VPN
 
-(The banner this describes is at the top of the screenshot further down.)
+(The banner this describes is at the top of the first screenshot above.)
 
 This is the case most failover guides skip, and it is the one where getting it
 wrong is hardest to notice.
@@ -257,6 +269,13 @@ namespace clients and per-tunnel packet counters as the oracle:
 | the primary WAN dies under the tunnels | tunnels re-establish over the backup WAN by themselves; traffic back on the first tunnel in ~40 s |
 | a tunnel's OpenVPN process is killed | instant switch; back on it in ~21 s after procd restarts it |
 | reboot | everything back in under a minute, no intervention |
+
+Repeated on the author's own router, a GL-MT6000 with three tunnels to three
+US sites: each tunnel killed in turn moved the traffic to the next in about
+20 s, with all three dead not one tunnel connection left by a WAN address, and
+restoring them brought the traffic back to the first. The rest of the LAN was
+unaffected throughout. A reboot and a WAN failure under the tunnels were tested
+on the bench only.
 
 Two things this needed that are not obvious, both handled for you:
 
@@ -348,7 +367,7 @@ Install on the device (copy the built package over first):
 by an OpenWrt repository key. On releases still using opkg, use
 `opkg install ./luci-app-wansentry_*.ipk` instead.
 
-Then **Network → WAN Failover**.
+Then **Network → WAN and VPN Failover**.
 
 ## Uninstalling
 
@@ -376,12 +395,12 @@ Nothing else wansentry installed survives removal.
 
 Documented up front rather than left to be discovered.
 
-- **IPv4 only.** wansentry generates no IPv6 failover configuration. On a
-  dual-stack network IPv6 traffic is unaffected by a failover and will continue
-  to use the failed uplink's route until that route goes away. mwan3 itself can
-  express IPv6 rules; wansentry deliberately does not generate them in v1,
-  because IPv6 failover does not reduce to a default-route metric and doing it
-  badly is worse than not doing it.
+- **IPv6 is generated but has not been failover-tested.** When an uplink has an
+  IPv6 partner (`wan6` beside `wan`), both halves are generated so IPv6 fails
+  over with IPv4. The test suite checks exactly what is written, but there was
+  no IPv6 line anywhere in development to carry a live failover, so what is
+  claimed is that the configuration is correct, not that mwan3 acts on it
+  correctly. VPN failover is IPv4 only.
 - **Detection is not instant, and that is deliberate.** An uplink is declared
   down only after `interval x failure threshold` seconds, five and three by
   default, so expect roughly 15 s before traffic moves, and roughly 30 s before

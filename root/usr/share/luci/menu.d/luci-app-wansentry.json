@@ -1,6 +1,6 @@
 {
 	"admin/network/wansentry": {
-		"title": "WAN Failover",
+		"title": "WAN and VPN Failover",
 		"order": 27,
 		"action": {
 			"type": "view",

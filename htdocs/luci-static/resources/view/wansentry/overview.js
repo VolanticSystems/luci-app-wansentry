@@ -16,9 +16,15 @@
 /*
  * wansentry, the one screen.
  *
- * Top to bottom: any banner that blocks or qualifies what follows, the live
- * failover status, the ten settings, the exact mwan3 configuration those
- * settings produce, and an honest list of what v1 does not solve.
+ * Top to bottom, the way every stock LuCI page reads: the page title, any
+ * banner that blocks or qualifies what follows, the live status, the settings
+ * as three tabs (WAN, VPN, Notifications) under one Save & Apply, and folded
+ * at the bottom the exact mwan3 configuration those settings produce and the
+ * known limitations.
+ *
+ * One page with tabs rather than one page per tab: the generated mwan3 config
+ * depends on all three sections at once, and separate pages would each get
+ * their own save that the others' preview could not see.
  *
  * Saving writes /etc/config/wansentry through form.Map as usual and then runs
  * the generator (generator.js) over the freshly saved values, so both configs
@@ -98,7 +104,7 @@ function lane(role, name, st, active) {
 				E('span', { 'class': 'ws-lanename' }, [ _('not selected') ]),
 				E('span', { 'class': 'ws-role' }, [ role ])
 			]),
-			E('div', { 'class': 'ws-sub' }, [ _('Pick an interface below.') ])
+			E('div', { 'class': 'ws-sub' }, [ _('Pick one in the WAN tab below.') ])
 		]);
 
 	var state = laneState(st),
@@ -175,6 +181,7 @@ return view.extend({
 
 		if (s.primary || s.backup || !gen.vpnActive(s))
 			parts.push(
+				E('h4', { 'class': 'ws-h4' }, [ _('WAN') ]),
 				E('div', { 'class': 'ws-sub', 'style': 'margin:0 0 .8em' }, [ summary ]),
 				E('div', { 'class': 'ws-lanes' }, [
 					lane(_('primary'), s.primary, statusOf(status, s.primary), active && active === s.primary),
@@ -185,7 +192,7 @@ return view.extend({
 			parts.push(this.renderVpnStatus(status, s));
 
 		parts.push(
-			E('h4', { 'style': 'margin:1.2em 0 .4em;font-size:12px' }, [ _('Recent uplink transitions') ]),
+			E('h4', { 'class': 'ws-h4' }, [ _('Recent transitions') ]),
 			eventList(events));
 
 		return E('div', {}, parts);
@@ -212,8 +219,8 @@ return view.extend({
 		else
 			summary = _('No VPN failover policy installed: mwan3 is not running this configuration.');
 
-		return E('div', { 'style': 'margin-top:1.2em' }, [
-			E('h4', { 'style': 'margin:0 0 .4em;font-size:12px' }, [ _('VPN failover') ]),
+		return E('div', {}, [
+			E('h4', { 'class': 'ws-h4' }, [ _('VPN') ]),
 			E('div', { 'class': 'ws-sub', 'style': 'margin:0 0 .8em' }, [ summary ]),
 			E('div', { 'class': 'ws-lanes' }, tunnels.map(function(t, i) {
 				return lane(i === 0 ? _('first choice') : _('backup %d').format(i), t,
@@ -272,7 +279,7 @@ return view.extend({
 		 * "the service is stopped" is only true when both are off. */
 		if (!s.enabled && !gen.vpnActive(s))
 			out.push(ws.note('warn', _('Failover is switched off'), [
-				E('span', {}, [ _('The generated mwan3 interfaces are written with tracking disabled and the mwan3 service is stopped and disabled on apply, so routing behaves exactly as it did before wansentry was installed. Turn on "Enable failover" below to arm it.') ])
+				E('span', {}, [ _('mwan3 is stopped and disabled, so routing behaves exactly as it did before wansentry was installed. Switch failover on in the WAN or VPN tab below to arm it.') ])
 			]));
 
 		if (audit.stock.length)
@@ -313,7 +320,7 @@ return view.extend({
 		}
 
 		if (pbr.skipped.length)
-			out.push(ws.note('warning', _('Some pbr policies cannot be protected'), [
+			out.push(ws.note('warn',_('Some pbr policies cannot be protected'), [
 				E('span', {}, [
 					_('These pbr policies match on neither a source nor a destination address, so they claim all traffic: %s. An mwan3 rule mirroring one would match every packet on this router, including the tunnel\'s own, and switch failover off while appearing to configure it. They are left alone instead, which means failover may override them. Give each one a source or destination range if you need it protected.').format(pbr.skipped.join(', '))
 				])
@@ -323,7 +330,7 @@ return view.extend({
 	},
 
 	renderLimits: function() {
-		return ws.card(_('Known limitations in v1'), null, E('div', {}, [
+		return E('div', {}, [
 			ws.note('info', _('DNS can still be answered through the dead uplink'), [
 				E('p', { 'style': 'margin:.3em 0' }, [
 					_('dnsmasq merges the resolvers learned from every interface that is up into one runtime resolv file and picks between them without regard to failover state. After a switchover, name resolution can still be attempted through the uplink that just died, so the network looks broken even though routing is correct. mwan3 does not solve this either; wansentry does not pretend to.')
@@ -342,9 +349,9 @@ return view.extend({
 					_('Those resolvers are then reached over whichever uplink the failover policy has selected, which is the behaviour you want. wansentry deliberately does not apply this for you: it rewrites DNS for the whole router and that is not a decision a failover screen should make silently.')
 				])
 			]),
-			ws.note('info', _('IPv6 is out of scope'), [
+			ws.note('info', _('IPv6 is generated but has not been failover-tested'), [
 				E('span', {}, [
-					_('wansentry generates IPv4 sections only. IPv6 failover moves on router advertisements and DHCPv6-PD state rather than a default-route metric, clients keep stale addresses for minutes, and mwan3 itself has several open defects there. Any IPv6 default route on this router keeps using ordinary kernel routing, untouched by the generated policy.')
+					_('When an uplink has an IPv6 partner (wan and wan6), both halves are generated so IPv6 fails over with IPv4. The generated configuration is checked by the test suite, but no live IPv6 failover has been measured, and VPN failover is IPv4 only.')
 				])
 			]),
 			ws.note('info', _('Flow offloading blunts the conntrack flush'), [
@@ -352,7 +359,7 @@ return view.extend({
 					_('With software or hardware flow offloading enabled in the firewall, established connections take a kernel fast path that skips netfilter, so they can survive a switchover even with the conntrack flush turned on. If you run offloading and want clean failover, expect to add a selective flush hook in /etc/mwan3.user.')
 				])
 			])
-		]));
+		]);
 	},
 
 	/* ------------------------------------------------------------ render */
@@ -415,22 +422,75 @@ return view.extend({
 
 		/* ------------------------------------------------------- the form */
 
-		var m = new form.Map('wansentry', _('WAN failover'),
-			_('One primary uplink, one backup, and a health check that decides between them. Applying this screen generates a complete minimal mwan3 configuration. Both uplinks must already exist as working network interfaces; wansentry steers between them, it does not create them.'));
+		var m = new form.Map('wansentry', _('WAN and VPN Failover'),
+			_('Switches to a backup internet uplink when the primary fails, and to the next VPN tunnel when one dies, by generating the mwan3 configuration that does it. The uplinks and tunnels must already exist; this page only decides which one carries the traffic.'));
 
 		m.readonly = blocked;
 
-		var s = m.section(form.NamedSection, 'main', 'wansentry');
+		/* Each section is a tab, the stock LuCI way (form.Map.tabbed, as on
+		 * other multi-section pages). The tab label is the section title, and
+		 * hidetitle keeps that title from being repeated as a heading inside
+		 * its own tab. */
+		m.tabbed = true;
+
+		var s = m.section(form.NamedSection, 'main', 'wansentry', _('WAN'),
+			_('One primary uplink, one backup, and a health check that decides between them.'));
+		s.hidetitle = true;
 		var o;
 
 		o = s.option(form.Flag, 'enabled', _('Enable WAN failover'),
-			_('Off: the generated mwan3 interfaces are written with tracking disabled and the mwan3 service is stopped and disabled, so this router routes exactly as it did before. On: mwan3 is enabled and started with the configuration below.'));
+			_('Off: the uplinks route exactly as they did before wansentry. Independent of VPN failover.'));
 		o.rmempty = false;
 
+		o = s.option(form.ListValue, 'primary', _('Primary interface'),
+			_('The uplink traffic uses whenever its health check passes.'));
+		o.value('', _('-- please select --'));
+		choices.forEach(function(c) { o.value(c[0], c[1]); });
+
+		o = s.option(form.ListValue, 'backup', _('Backup interface'),
+			_('Used only while the primary is down. It must already exist as a working interface with its own gateway.'));
+		o.value('', _('-- please select --'));
+		choices.forEach(function(c) { o.value(c[0], c[1]); });
+
+		o = s.option(form.DynamicList, 'track_ip', _('Health-check hosts'),
+			_('Pinged through each uplink. Use two hosts on different operators: an uplink counts as up while any one of them answers.'));
+		/* nomask: a bare host address only. Without it 'ip4addr' accepts
+		 * 8.8.8.8/24, which mwan3track would then try to ping as a non-address. */
+		o.datatype = 'ip4addr("nomask")';
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'interval', _('Check interval'),
+			_('Seconds between probes.'));
+		o.datatype = 'range(2,3600)';
+		o.placeholder = '5';
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'down', _('Failure threshold'),
+			_('Failed checks in a row before an uplink is declared down. Interval × threshold is the worst-case detection time.'));
+		o.datatype = 'range(1,100)';
+		o.placeholder = '3';
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'up', _('Recovery threshold'),
+			_('Good checks in a row before an uplink is used again. Keep it above the failure threshold so a shaky primary does not flap.'));
+		o.datatype = 'range(1,100)';
+		o.placeholder = '6';
+		o.rmempty = false;
+
+		o = s.option(form.Flag, 'failback', _('Return to primary when it recovers'),
+			_('On: traffic moves back as soon as the primary recovers. Off: each client stays on the backup for up to 10 minutes after its last packet; this softens failback, it cannot prevent it.'));
+		o.rmempty = false;
+
+		o = s.option(form.Flag, 'flush_conntrack', _('Flush connection tracking on switchover'),
+			_('Recommended. Drops open connections on a switchover so clients reconnect over the working uplink instead of retrying a dead one for minutes. Connections on the healthy uplink are dropped too.'));
+		o.rmempty = false;
+
+		/* Last on the tab: it is a repair for a missing uplink, not a setting
+		 * most people ever touch. */
 		o = s.option(form.Flag, 'show_all_interfaces', _('Show every interface'),
 			forceAll
-				? _('Forced on: either fewer than two interfaces look like uplinks, or a saved selection is one this screen would not offer. Everything is listed so nothing you have already chosen can become unselectable.')
-				: _('Off: only interfaces with their own route off this router are offered. On: every interface is listed, each labelled with why it is not normally offered. Classification uses protocol, device and gateway rather than the interface name, and it can be wrong: an ISP that delivers the uplink over a tunnel looks exactly like a VPN from here. Turn this on if your uplink is missing.'));
+				? _('Forced on: fewer than two interfaces look like uplinks, or a saved choice would otherwise be hidden.')
+				: _('Only interfaces that look like uplinks are offered above. Turn this on if yours is missing; the guess can be wrong when an ISP delivers the uplink over a tunnel.'));
 		o.rmempty = false;
 
 		/* `|| blocked`, and the assignment is the whole reason this comment
@@ -487,56 +547,14 @@ return view.extend({
 			});
 		};
 
-		o = s.option(form.ListValue, 'primary', _('Primary interface'),
-			_('The uplink traffic uses whenever its health check passes.'));
-		o.value('', _('-- please select --'));
-		choices.forEach(function(c) { o.value(c[0], c[1]); });
-
-		o = s.option(form.ListValue, 'backup', _('Backup interface'),
-			_('Used only while the primary is down. It must be a working netifd interface with its own gateway. wansentry does not create interfaces, it only steers between them.'));
-		o.value('', _('-- please select --'));
-		choices.forEach(function(c) { o.value(c[0], c[1]); });
-
-		o = s.option(form.DynamicList, 'track_ip', _('Health-check hosts'),
-			_('Pinged through each uplink\'s own routing table. Use two hosts on different operators: the generated config marks an uplink up when any one of them answers, so a single ICMP-hostile target cannot cause a phantom outage.'));
-		/* nomask: a bare host address only. Without it 'ip4addr' accepts
-		 * 8.8.8.8/24, which mwan3track would then try to ping as a non-address. */
-		o.datatype = 'ip4addr("nomask")';
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'interval', _('Check interval'),
-			_('Seconds between probes.'));
-		o.datatype = 'range(2,3600)';
-		o.placeholder = '5';
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'down', _('Failure threshold'),
-			_('Consecutive failed checks before an uplink is declared offline. Interval × threshold is your worst-case detection time.'));
-		o.datatype = 'range(1,100)';
-		o.placeholder = '3';
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'up', _('Recovery threshold'),
-			_('Consecutive successful checks before an uplink is declared online again. Keep this higher than the failure threshold; flapping back onto a shaky primary is worse than staying on a working backup a little longer.'));
-		o.datatype = 'range(1,100)';
-		o.placeholder = '6';
-		o.rmempty = false;
-
-		o = s.option(form.Flag, 'failback', _('Return to primary when it recovers'),
-			_('On: as soon as the primary passes its recovery threshold, traffic moves back to it. Off: sets mwan3 stickiness, an ipset keyed on source IP. A client that failed over keeps using the backup for up to 10 minutes after its last matching packet; other clients follow the policy back to the primary immediately. It is source-IP stickiness, not per-connection, and mwan3 cannot latch permanently onto the backup, so "off" softens the failback rather than preventing it.'));
-		o.rmempty = false;
-
-		o = s.option(form.Flag, 'flush_conntrack', _('Flush connection tracking on switchover'),
-			_('Recommended. When an uplink changes state the kernel still holds conntrack entries pinned to the old gateway, and TCP treats the resulting ICMP unreachables as a soft error, so clients retransmit into a dead path for minutes instead of reconnecting. Flushing forces every connection to be re-established over the surviving uplink. The cost is that connections on the healthy uplink are dropped too, because mwan3\'s flush is global rather than per-uplink.'));
-		o.rmempty = false;
-
 		/* ------------------------------------------------- VPN failover */
 
-		var vs = m.section(form.NamedSection, 'vpn', 'vpn', _('VPN failover'),
-			_('For traffic that policy-based routing (pbr) already sends into a VPN tunnel: when that tunnel dies, move the traffic to the next tunnel in the list, and if they are all dead, block it rather than let it out by the ordinary internet. Which traffic goes into a tunnel stays pbr\'s decision; this only decides which tunnel. The tunnels must already exist and be connected; wansentry does not create them.'));
+		var vs = m.section(form.NamedSection, 'vpn', 'vpn', _('VPN'),
+			_('For traffic that policy-based routing (pbr) already sends into a VPN tunnel: when that tunnel dies, move the traffic to the next one, and block it if every tunnel is dead. pbr still decides which traffic uses a tunnel.'));
+		vs.hidetitle = true;
 
 		o = vs.option(form.Flag, 'enabled', _('Enable VPN failover'),
-			_('Independent of the WAN failover above: either, both, or neither can be on.'));
+			_('Independent of WAN failover: either, both or neither can be on.'));
 		o.rmempty = false;
 
 		/* Every option below depends on this flag, and LuCI DELETES a hidden
@@ -549,40 +567,40 @@ return view.extend({
 		var tunnelChoices = classified.filter(function(c) { return c.role === 'tunnel'; });
 
 		o = vs.option(form.DynamicList, 'tunnel', _('Tunnels, in order'),
-			_('The first tunnel carries the traffic while it is healthy; the others are tried in the order listed. At least two. Each needs its own health check through the tunnel, so pick hosts on the far side that answer ping.'));
+			_('The first carries the traffic while it is healthy; the rest are tried in this order. At least two.'));
 		tunnelChoices.forEach(function(c) { o.value(c.name, c.base); });
 		o.depends('enabled', '1');
 		o.retain = true;
 
 		o = vs.option(form.DynamicList, 'track_ip', _('Health-check hosts'),
-			_('Pinged through each tunnel. Two hosts on different operators, as for the uplinks: a tunnel is up while any one answers.'));
+			_('Pinged through each tunnel. Use two hosts on different operators: a tunnel counts as up while any one of them answers.'));
 		o.datatype = 'ip4addr("nomask")';
 		o.depends('enabled', '1');
 		o.retain = true;
 
 		o = vs.option(form.Value, 'interval', _('Check interval'),
-			_('Seconds between probes while a tunnel is healthy. Once a probe fails, the next ones come every 2 seconds, so a dead tunnel is declared in roughly 15-20 seconds at the defaults.'));
+			_('Seconds between probes. After a failed probe they come every 2 seconds, so a dead tunnel is declared in about 15 to 20 seconds at the defaults.'));
 		o.datatype = 'range(2,3600)';
 		o.placeholder = '5';
 		o.depends('enabled', '1');
 		o.retain = true;
 
 		o = vs.option(form.Value, 'down', _('Failure threshold'),
-			_('Consecutive failed checks before a tunnel is declared dead.'));
+			_('Failed checks in a row before a tunnel is declared dead.'));
 		o.datatype = 'range(1,100)';
 		o.placeholder = '3';
 		o.depends('enabled', '1');
 		o.retain = true;
 
 		o = vs.option(form.Value, 'up', _('Recovery threshold'),
-			_('Consecutive successful checks before a tunnel is used again.'));
+			_('Good checks in a row before a tunnel is used again.'));
 		o.datatype = 'range(1,100)';
 		o.placeholder = '3';
 		o.depends('enabled', '1');
 		o.retain = true;
 
 		o = vs.option(form.Flag, 'killswitch', _('Block tunnel traffic when every tunnel is down'),
-			_('On (recommended): traffic pbr sends into a tunnel gets no route at all while every tunnel is dead, so it can never leave by the ordinary internet. Off: it falls back to the ordinary internet until a tunnel recovers.'));
+			_('Recommended. While every tunnel is dead, tunnel traffic is blocked instead of leaving over the ordinary internet.'));
 		o.default = '1';
 		o.rmempty = false;
 		o.depends('enabled', '1');
@@ -590,8 +608,9 @@ return view.extend({
 
 		/* -------------------------------------------------- notifications */
 
-		var ns = m.section(form.NamedSection, 'notify', 'notify', _('Email notifications'),
-			_('A failover that works is quiet: the backup carries the traffic and nothing looks broken, so the first you hear of a dead primary is when the backup dies too. This sends an email whenever an uplink or tunnel goes down or comes back, and a daily report of every path, so a backup that died weeks ago is noticed before it is needed.'));
+		var ns = m.section(form.NamedSection, 'notify', 'notify', _('Notifications'),
+			_('A failover that works is quiet, so a dead backup goes unnoticed until it is needed. This emails you whenever an uplink or tunnel goes down or comes back, plus a daily report of every path.'));
+		ns.hidetitle = true;
 
 		o = ns.option(form.Flag, 'enabled', _('Send notifications'));
 		o.rmempty = false;
@@ -620,11 +639,11 @@ return view.extend({
 		o = ns.option(form.Value, 'username', _('SMTP login'));
 
 		o = ns.option(form.Value, 'password', _('SMTP password'),
-			_('Stored in plain text in /etc/config/wansentry, readable by anyone who can read that file. Use an account made for this.'));
+			_('Stored in plain text in /etc/config/wansentry. Use an account made for this.'));
 		o.password = true;
 
 		o = ns.option(form.Flag, 'daily', _('Daily report'),
-			_('One email a day listing every uplink and tunnel and whether it is up. A path that stays down shows here every day until it is fixed.'));
+			_('One email a day listing every uplink and tunnel and whether it is up.'));
 		o.default = '1';
 		o.rmempty = false;
 
@@ -637,7 +656,7 @@ return view.extend({
 		o.retain = true;
 
 		o = ns.option(form.Button, '_test', _('Test'),
-			_('Sends a test message with the saved settings, even while notifications are switched off. Save first; this uses what is on the router, not what is typed above.'));
+			_('Uses the saved settings, so save first. Works even while notifications are switched off.'));
 		o.inputtitle = _('Send test email');
 		o.inputstyle = 'action';
 		o.onclick = function() {
@@ -669,20 +688,39 @@ return view.extend({
 			 * the LIVE widget values via liveSettings() instead. */
 			self.hookPreview();
 
-			return E([], [
+			/* The page title and description belong to the Map, and a stock LuCI
+			 * page starts with them. Banners and status therefore go INSIDE the
+			 * map node, after its description and before the tabs, rather than
+			 * above the whole map, where they used to push the title halfway
+			 * down the page. */
+			var head = mapNode.querySelector('.cbi-map-descr') || mapNode.querySelector('h2'),
+			    top = E([], [
 				E([], self.renderBanners(mwan3Loaded, audit)),
-
-				ws.card(_('Failover status'),
-					_('refreshed every %d s').format(POLL_INTERVAL),
+				ws.section(_('Status'),
+					_('Refreshed every %d seconds.').format(POLL_INTERVAL),
 					self.statusNode),
 
+				/* Without a heading the tab strip ran straight on from the
+				 * status lanes and read as part of them. */
+				E('h3', {}, [ _('Settings') ])
+			]);
+
+			if (head)
+				head.parentNode.insertBefore(top, head.nextSibling);
+			else
+				mapNode.insertBefore(top, mapNode.firstChild);
+
+			/* Reference material, folded: it is not a setting, and left open it
+			 * made the page read as one long list. */
+			return E([], [
 				mapNode,
 
-				ws.card(_('Generated mwan3 configuration'),
-					_('written to /etc/config/mwan3 on apply'),
-					self.previewNode),
-
-				self.renderLimits()
+				ws.section(_('Details'), null, E('div', {}, [
+					ws.fold(_('Generated mwan3 configuration'),
+						_('What Save & Apply writes to /etc/config/mwan3, updated as you edit.'),
+						self.previewNode),
+					ws.fold(_('Known limitations'), null, self.renderLimits())
+				]))
 			]);
 		});
 	},

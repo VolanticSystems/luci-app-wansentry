@@ -36,12 +36,12 @@ var callMwan3Status = rpc.declare({
 var STYLE_ID = 'wansentry-style';
 
 var CSS = '\
-.ws-card{border:1px solid var(--border-color-medium);border-radius:4px;\
- background:var(--background-color-high);padding:.8em 1em 1em;margin:0 0 1em}\
-.ws-cardhead{display:flex;align-items:baseline;justify-content:space-between;\
- gap:.75em;flex-wrap:wrap;margin:0 0 .8em}\
-.ws-cardhead h3{margin:0;padding:0;font-size:15px;font-weight:700;border:none}\
-.ws-cardaux{font-size:11px;color:var(--text-color-medium)}\
+.ws-fold{margin:0 0 .8em}\
+.ws-fold>summary{cursor:pointer;font-weight:700;padding:.3em 0}\
+.ws-fold>summary .ws-sub{display:inline;font-weight:400;margin-left:.6em}\
+.ws-fold[open]>summary{margin-bottom:.5em}\
+.ws-h4{margin:1.4em 0 .3em;font-size:13px;font-weight:700}\
+.ws-h4:first-child{margin-top:0}\
 .ws-sub{color:var(--text-color-medium);font-size:11px;line-height:15px;display:block}\
 .ws-mono{font-family:var(--font-mono);font-size:11px}\
 .ws-note{border-left:3px solid var(--border-color-medium);padding:.15em 0 .15em .8em;\
@@ -50,8 +50,7 @@ var CSS = '\
 .ws-note.ws-warn{border-left-color:hsl(27,70%,46%)}\
 .ws-note.ws-error{border-left-color:hsl(2,62%,50%)}\
 .ws-note.ws-info{border-left-color:hsl(210,58%,46%)}\
-.ws-lanes{display:grid;grid-template-columns:1fr;gap:1em}\
-@media (min-width:760px){.ws-lanes{grid-template-columns:1fr 1fr}}\
+.ws-lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1em}\
 .ws-lane{border:1px solid var(--border-color-medium);border-radius:4px;padding:.7em .9em}\
 .ws-lane.ws-active{border-color:hsl(150,50%,36%);box-shadow:inset 3px 0 0 hsl(150,50%,36%)}\
 .ws-lanehead{display:flex;align-items:baseline;justify-content:space-between;gap:.6em}\
@@ -111,12 +110,20 @@ function duration(sec) {
 
 /* ------------------------------------------------------------------- dom */
 
-function card(title, aux, content) {
-	return E('div', { 'class': 'ws-card' }, [
-		E('div', { 'class': 'ws-cardhead' }, [
-			E('h3', {}, [ title ]),
-			aux ? E('div', { 'class': 'ws-cardaux' }, [ aux ]) : ''
-		]),
+/* A stock LuCI section: the theme's own h3 and description styles, so these
+ * headings match the ones form.Map draws instead of a look of our own. */
+function section(title, descr, content) {
+	return E('div', { 'class': 'cbi-section' }, [
+		E('h3', {}, [ title ]),
+		descr ? E('div', { 'class': 'cbi-section-descr' }, [ descr ]) : '',
+		content
+	]);
+}
+
+/* Closed by default; for reference material rather than settings. */
+function fold(title, descr, content) {
+	return E('details', { 'class': 'ws-fold' }, [
+		E('summary', {}, [ title, descr ? E('span', { 'class': 'ws-sub' }, [ descr ]) : '' ]),
 		content
 	]);
 }
@@ -191,7 +198,8 @@ return baseclass.extend({
 
 	injectCSS: injectCSS,
 	duration: duration,
-	card: card,
+	section: section,
+	fold: fold,
 	note: note,
 	dot: dot,
 	events: events
