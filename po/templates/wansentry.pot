@@ -52,7 +52,7 @@ msgstr ""
 msgid "Check interval"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:946
+#: htdocs/luci-static/resources/view/wansentry/overview.js:949
 msgid "Complete the settings above to see the configuration this screen will generate."
 msgstr ""
 
@@ -60,15 +60,15 @@ msgstr ""
 msgid "DNS can still be answered through the dead uplink"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:847
+#: htdocs/luci-static/resources/view/wansentry/overview.js:850
 msgid "Daily report"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:852
+#: htdocs/luci-static/resources/view/wansentry/overview.js:855
 msgid "Daily report at"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:897
+#: htdocs/luci-static/resources/view/wansentry/overview.js:900
 msgid "Details"
 msgstr ""
 
@@ -129,7 +129,7 @@ msgstr ""
 msgid "Foreign sections:"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:898
+#: htdocs/luci-static/resources/view/wansentry/overview.js:901
 msgid "Generated mwan3 configuration"
 msgstr ""
 
@@ -171,7 +171,7 @@ msgstr ""
 msgid "Interface names may use only letters, digits and underscore, and may not begin with \"wansentry_\"."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:901
+#: htdocs/luci-static/resources/view/wansentry/overview.js:904
 msgid "Known limitations"
 msgstr ""
 
@@ -235,16 +235,16 @@ msgstr ""
 msgid "On: traffic moves back as soon as the primary recovers. Off: each client stays on the backup for up to 10 minutes after its last packet; this softens failback, it cannot prevent it."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:848
-msgid "One email a day listing every uplink and tunnel and whether it is up."
-msgstr ""
-
 #: htdocs/luci-static/resources/view/wansentry/overview.js:621
 msgid "One primary uplink, one backup, and a health check that decides between them."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/wansentry/overview.js:677
 msgid "Only interfaces that look like uplinks are offered above. Turn this on if yours is missing; the guess can be wrong when an ISP delivers the uplink over a tunnel."
+msgstr ""
+
+#: htdocs/luci-static/resources/view/wansentry/overview.js:851
+msgid "Optional. One email a day listing every uplink and tunnel and whether it is up. Off: you hear only when a path goes down or comes back. A path that is not connected at all, such as an unplugged USB phone, is listed but not counted as down."
 msgstr ""
 
 #: htdocs/luci-static/resources/view/wansentry/overview.js:208
@@ -288,11 +288,11 @@ msgstr ""
 msgid "Recovery threshold"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:1009
+#: htdocs/luci-static/resources/view/wansentry/overview.js:1012
 msgid "Refusing to save: /etc/config/mwan3 contains configuration wansentry did not create."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:999
+#: htdocs/luci-static/resources/view/wansentry/overview.js:1002
 msgid "Refusing to save: /etc/config/mwan3 could not be read, so wansentry cannot tell whether it would be overwriting configuration it did not create."
 msgstr ""
 
@@ -308,7 +308,7 @@ msgstr ""
 msgid "Return to primary when it recovers"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:853
+#: htdocs/luci-static/resources/view/wansentry/overview.js:856
 msgid "Router local time."
 msgstr ""
 
@@ -353,7 +353,7 @@ msgstr ""
 msgid "Send notifications"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:862
+#: htdocs/luci-static/resources/view/wansentry/overview.js:865
 msgid "Send test email"
 msgstr ""
 
@@ -361,7 +361,7 @@ msgstr ""
 msgid "Send to"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:869
+#: htdocs/luci-static/resources/view/wansentry/overview.js:872
 msgid "Sending failed. The reason is in the system log: logread -e wansentry"
 msgstr ""
 
@@ -397,11 +397,11 @@ msgstr ""
 msgid "Switches to a backup internet uplink when the primary fails, and to the next VPN tunnel when one dies, by generating the mwan3 configuration that does it. The uplinks and tunnels must already exist; this page only decides which one carries the traffic."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:860
+#: htdocs/luci-static/resources/view/wansentry/overview.js:863
 msgid "Test"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:868
+#: htdocs/luci-static/resources/view/wansentry/overview.js:871
 msgid "Test email handed to the mail server. If it does not arrive, check the spam folder and the system log (logread -e wansentry)."
 msgstr ""
 
@@ -461,7 +461,7 @@ msgstr ""
 msgid "Used only while the primary is down. It must already exist as a working interface with its own gateway."
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:861
+#: htdocs/luci-static/resources/view/wansentry/overview.js:864
 msgid "Uses the saved settings, so save first. Works even while notifications are switched off."
 msgstr ""
 
@@ -502,7 +502,7 @@ msgstr ""
 msgid "WAN config"
 msgstr ""
 
-#: htdocs/luci-static/resources/view/wansentry/overview.js:899
+#: htdocs/luci-static/resources/view/wansentry/overview.js:902
 msgid "What Save & Apply writes to /etc/config/mwan3, updated as you edit."
 msgstr ""
 

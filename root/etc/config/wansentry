@@ -104,5 +104,6 @@ config notify 'notify'
 	# option username ''
 	# option password ''
 	# 1 = a report of every path once a day, at daily_hour (router local time).
-	option daily '1'
+	# Off by default: the alerts already say when something changes.
+	option daily '0'
 	option daily_hour '8'

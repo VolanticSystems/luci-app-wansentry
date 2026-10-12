@@ -844,9 +844,12 @@ return view.extend({
 		o.depends('auth', '1');
 		o.retain = true;
 
+		/* Off by default: the alerts already say when something changes, and
+		 * plenty of people do not want a reminder every morning about a problem
+		 * they already know about. */
 		o = ns.option(form.Flag, 'daily', _('Daily report'),
-			_('One email a day listing every uplink and tunnel and whether it is up.'));
-		o.default = '1';
+			_('Optional. One email a day listing every uplink and tunnel and whether it is up. Off: you hear only when a path goes down or comes back. A path that is not connected at all, such as an unplugged USB phone, is listed but not counted as down.'));
+		o.default = '0';
 		o.rmempty = false;
 
 		o = ns.option(form.ListValue, 'daily_hour', _('Daily report at'),

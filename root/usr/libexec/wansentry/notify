@@ -73,7 +73,10 @@ summary() {
 	esac
 	echo
 	echo "All paths:"
-	paths | sort -k2,2r -k1,1 | while read -r i kind st; do printf '  %-12s %-7s %s\n' "$i" "$kind" "$st"; done
+	paths | sort -k2,2r -k1,1 | while read -r i kind st; do
+		[ "$st" = disabled ] && st="not connected"
+		printf '  %-12s %-7s %s\n' "$i" "$kind" "$st"
+	done
 }
 
 # ------------------------------------------------------------------- html
@@ -97,6 +100,7 @@ state_badge() {
 	case "$1" in
 		online)  badge "&#10004; online" "#00785a" "#ffffff" "#00785a" ;;
 		offline) badge "&#10006; offline" "#b34d00" "#ffffff" "#b34d00" ;;
+		disabled) badge "not connected" "#ffffff" "#404040" "#808080" ;;
 		*)       badge "$1" "#ffffff" "#404040" "#808080" ;;
 	esac
 }
@@ -262,12 +266,21 @@ case "$1" in
 		send "$kind $iface $what" "The $kind $iface $what" "$tone"
 		;;
 	daily)
-		down=$(paths | awk '$3 != "online" {print $1}' | tr '\n' ' ')
+		# A path mwan3 reports "disabled" has no interface at all: a USB phone
+		# that is unplugged because it is being used as a phone, a modem that is
+		# switched off. That is a choice, not a failure, and reporting it as
+		# "NOT all paths up" every morning trains people to ignore the report
+		# (found on the GL-MT6000, 2026-10-12). Only a path that exists and is
+		# failing its checks counts as down; the absent ones are listed as not
+		# connected, in the body and in brackets in the subject.
+		down=$(paths | awk '$3 != "online" && $3 != "disabled" {print $1}' | xargs)
+		absent=$(paths | awk '$3 == "disabled" {print $1}' | xargs)
+		note=
+		[ -n "$absent" ] && note=" ($absent not connected)"
 		if [ -n "$down" ]; then
-			subj="daily report: NOT all paths up ($down)"
-			send "${subj% }" "Daily report: not every path is up (${down% })" down
+			send "daily report: NOT all paths up ($down)" "Daily report: not every path is up ($down)" down
 		else
-			send "daily report: all paths up" "Daily report: every path is up" up
+			send "daily report: all paths up$note" "Daily report: every connected path is up" up
 		fi
 		;;
 esac

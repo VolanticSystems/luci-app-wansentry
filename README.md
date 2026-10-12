@@ -53,8 +53,8 @@ to measure your own router rather than trust the numbers in it.
 One file, every device. The package is `noarch`, and the same `.apk` is
 verified installing on both aarch64 and arm_cortex-a15 hardware.
 
-    wget -O luci-app-wansentry-1.2.2-r1.apk https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.2.2/luci-app-wansentry-1.2.2-r1.apk
-    apk add --allow-untrusted ./luci-app-wansentry-1.2.2-r1.apk
+    wget -O luci-app-wansentry-1.2.3-r1.apk https://github.com/VolanticSystems/luci-app-wansentry/releases/download/v1.2.3/luci-app-wansentry-1.2.3-r1.apk
+    apk add --allow-untrusted ./luci-app-wansentry-1.2.3-r1.apk
 
 Needs OpenWrt 25.12 or newer and `mwan3`. Both uplinks must already exist as
 working network interfaces. `--allow-untrusted` is required because this is not
@@ -312,10 +312,12 @@ With notifications on:
   "back up" is sent only after a "down" was, so restarting mwan3 (a Save &
   Apply, say) sends nothing;
 - one email at boot instead of one per path coming up;
-- a daily report of every path, at an hour you choose. A backup that died
-  weeks ago and has never been needed since shows up here, every day, until
-  it is fixed. A daily email that stops arriving is itself the alarm that the
-  mail path is broken.
+- optionally, off by default, a daily report of every path at an hour you
+  choose. A backup that died weeks ago and has never been needed since shows
+  up here, every day, until it is fixed, and a daily email that stops arriving
+  is itself the alarm that the mail path is broken. A path that is not
+  connected at all, such as a USB phone unplugged because it is being used as
+  a phone, is listed but not counted as down.
 
 Sent with `msmtp` (a dependency), with a 30 s network timeout, and never in a
 way that can hold up the failover it reports (see DESIGN.md section 17). The
